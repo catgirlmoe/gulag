@@ -162,7 +162,8 @@ async def sendMatchPart(p: Player, m: Match):
 
 async def sendMatchComplete(slots: list[Slot], m: Match):
   submitted, not_submitted = await m.await_submissions(slots) # Wait untill we receive all scores from the players
-  
+  print(submitted)
+  print(not_submitted)
   if submitted:
     player_names = []
     player_accuracy = []
