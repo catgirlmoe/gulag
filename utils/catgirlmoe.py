@@ -169,7 +169,7 @@ async def sendMatchComplete(slots: list[Slot], m: Match):
 
     wh = Webhook(url=WEBHOOK)
 
-    e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{s.bmap.id}',color=0xF44336)
+    e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{submitted.keys()[0].bmap.id}',color=0xF44336)
     for p in submitted.keys():
       s = p.recent_score
       player_names.append(p.name)
