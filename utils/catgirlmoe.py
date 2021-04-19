@@ -169,7 +169,7 @@ async def sendMatchComplete(slots: list[Slot], m: Match):
 
     wh = Webhook(url=WEBHOOK)
 
-    e = Embed(title=submitted.keys()[0].bmap.full, url=f'https://osu.ppy.sh/b/{submitted.keys()[0].bmap.id}',color=0xF44336)
+    e = Embed(title=next(iter(submitted)).bmap.full, url=f'https://osu.ppy.sh/b/{next(iter(submitted)).bmap.id}',color=0xF44336)
     for p in submitted.keys():
       s = p.recent_score
       player_names.append(p.name)
@@ -180,6 +180,6 @@ async def sendMatchComplete(slots: list[Slot], m: Match):
     e.add_field("Players:", '\n'.join(player_names), True)
     e.add_field("Accuracy:", '\n'.join(player_accuracy), True)
     e.add_field("Score:", '\n'.join(player_scores), True)
-    e.set_image(url=f'https://assets.ppy.sh/beatmaps/{submitted.keys()[0].bmap.set_id}/covers/cover.jpg')
+    e.set_image(url=f'https://assets.ppy.sh/beatmaps/{next(iter(submitted)).bmap.set_id}/covers/cover.jpg')
     wh.add_embed(e)
     await wh.post(glob.http)
