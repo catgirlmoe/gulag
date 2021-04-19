@@ -74,21 +74,22 @@ MOD_EMOTES = {
 }
 
 async def sendSubmitScore(s: Score):
-  wh = Webhook(url=WEBHOOK)
+  if not s.player.match:
+    wh = Webhook(url=WEBHOOK)
 
-  diff=[f'{s.sr:.2f}★']
-  if s.mods:
-    diff.insert(1, f'({"".join(map(lambda mod: MOD_EMOTES[mod], re.findall("..",repr(s.mods).replace("DTNC","NC"))))})')
+    diff=[f'{s.sr:.2f}★']
+    if s.mods:
+      diff.insert(1, f'({"".join(map(lambda mod: MOD_EMOTES[mod], re.findall("..",repr(s.mods).replace("DTNC","NC"))))})')
 
-  e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{s.bmap.id}',color=GRADE_COLORS[s.grade])
-  e.set_author(name=f'{s.player.name} achieved #{s.rank} on', url=f'https://osu.catgirl.moe/u/{s.player.id}', icon_url=f'https://a.osu.catgirl.moe/{s.player.id}')
-  e.add_field("Difficulty:", ' '.join(diff), True)
-  e.add_field("Accuracy:", f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)', True)
-  e.add_field("Score:", f'{s.score:,} ({s.max_combo:,}/{s.bmap.max_combo:,}x)', True)
-  e.set_image(url=f'https://assets.ppy.sh/beatmaps/{s.bmap.set_id}/covers/cover.jpg')
+    e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{s.bmap.id}',color=GRADE_COLORS[s.grade])
+    e.set_author(name=f'{s.player.name} achieved #{s.rank} on', url=f'https://osu.catgirl.moe/u/{s.player.id}', icon_url=f'https://a.osu.catgirl.moe/{s.player.id}')
+    e.add_field("Difficulty:", ' '.join(diff), True)
+    e.add_field("Accuracy:", f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)', True)
+    e.add_field("Score:", f'{s.score:,} ({s.max_combo:,}/{s.bmap.max_combo:,}x)', True)
+    e.set_image(url=f'https://assets.ppy.sh/beatmaps/{s.bmap.set_id}/covers/cover.jpg')
 
-  wh.add_embed(e)
-  await wh.post(glob.http)
+    wh.add_embed(e)
+    await wh.post(glob.http)
 
 async def sendLogin(p: Player):
   wh = Webhook(url=WEBHOOK)
