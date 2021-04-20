@@ -174,7 +174,7 @@ async def sendMatchComplete(slots: list[Slot], m: Match):
     bmap = next(iter(submitted)).recent_score.bmap
 
     e = Embed(title=bmap.full, url=f'https://osu.ppy.sh/b/{bmap.id}',color=0xF44336)
-    for p, z in sorted(submitted, key=lambda i: submitted.keys()[i].recent_score.score):
+    for p, z in sorted(submitted.items(), key=lambda item: item[1].recent_score.score):
       s = p.recent_score
       player_names.append(p.name)
       player_accuracy.append(f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)')
