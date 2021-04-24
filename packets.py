@@ -13,7 +13,6 @@ from enum import unique
 from functools import cache
 from functools import lru_cache
 from functools import partialmethod
-from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -28,7 +27,6 @@ from objects.match import MatchWinConditions
 from objects.match import ScoreFrame
 from objects.match import SlotStatus
 from utils.misc import escape_enum
-from utils.misc import point_of_interest
 from utils.misc import pymysql_encode
 
 if TYPE_CHECKING:
@@ -54,7 +52,7 @@ class Packets(IntEnum):
     CHO_USER_ID = 5
     CHO_SEND_MESSAGE = 7
     CHO_PONG = 8
-    CHO_HANDLE_IRC_CHANGE_USERNAME = 9
+    CHO_HANDLE_IRC_CHANGE_USERNAME = 9 # unused
     CHO_HANDLE_IRC_QUIT = 10
     CHO_USER_STATS = 11
     CHO_USER_LOGOUT = 12
@@ -240,7 +238,7 @@ class BanchoPacketReader:
         """Read all arguments from the internal buffer."""
         for arg_name, arg_type in self._current.args.items():
             # read value from buffer
-            val: Any = None
+            val: object = None
 
             # non-osu! datatypes
             if arg_type == osuTypes.i8:
@@ -398,9 +396,7 @@ class BanchoPacketReader:
         # ignore match id (i16) and inprogress (i8).
         self.view = self.view[3:]
 
-        #m.type = MatchTypes(self.read_i8())
-        if self.read_i8() == 1:
-            point_of_interest() # what is powerplay
+        self.read_i8() # powerplay unused
 
         m.mods = Mods(self.read_i32())
 
@@ -565,7 +561,7 @@ def write_scoreframe(s: ScoreFrame) -> bytearray:
         s.max_combo, s.perfect, s.current_hp, s.tag_byte, s.score_v2
     ))
 
-def write(packid: int, *args: tuple[Any, ...]) -> bytes:
+def write(packid: int, *args: tuple[object, ...]) -> bytes:
     """ Write `args` into bytes. """
     ret = bytearray(struct.pack('<Hx', packid))
 
@@ -630,6 +626,7 @@ def pong() -> bytes:
     return write(Packets.CHO_PONG)
 
 # packet id: 9
+# NOTE: deprecated
 def changeUsername(old: str, new: str) -> bytes:
     return write(
         Packets.CHO_HANDLE_IRC_CHANGE_USERNAME,

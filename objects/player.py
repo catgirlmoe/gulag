@@ -9,7 +9,6 @@ from enum import IntEnum
 from enum import unique
 from functools import cached_property
 from functools import partial
-from typing import Any
 from typing import Coroutine
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -29,6 +28,7 @@ from objects.channel import Channel
 from objects.match import Match
 from objects.match import MatchTeams
 from objects.match import MatchTeamTypes
+from objects.match import Slot
 from objects.match import SlotStatus
 from utils.misc import escape_enum
 from utils.misc import pymysql_encode
@@ -119,7 +119,7 @@ class Player:
     pres_filter: `PresenceFilter`
         The scope of users the client can currently see.
 
-    menu_options: `dict[int, dict[str, Any]]`
+    menu_options: `dict[int, dict[str, object]]`
         The current osu! chat menu options available to the player.
         XXX: These may eventually have a timeout.
 
@@ -217,7 +217,7 @@ class Player:
         }
 
         # {id: {'callback', func, 'timeout': unixt, 'reusable': False}, ...}
-        self.menu_options: dict[int, dict[str, Any]] = {}
+        self.menu_options: dict[int, dict[str, object]] = {}
 
         # subject to possible change in the future,
         # although if anything, bot accounts will
@@ -358,7 +358,7 @@ class Player:
 
         # leave channels
         while self.channels:
-            self.leave_channel(self.channels[0])
+            self.leave_channel(self.channels[0], kick=False)
 
         # remove from playerlist and
         # enqueue logout to all users.
@@ -575,7 +575,7 @@ class Player:
 
         self.leave_channel(self.match.chat)
 
-        if all(map(lambda s: s.empty(), self.match.slots)):
+        if all(map(Slot.empty, self.match.slots)):
             # multi is now empty, chat has been removed.
             # remove the multi from the channels list.
             log(f'Match {self.match} finished.')
@@ -646,7 +646,7 @@ class Player:
 
         return True
 
-    def leave_channel(self, c: Channel) -> None:
+    def leave_channel(self, c: Channel, kick: bool = True) -> None:
         """Attempt to remove `self` from `c`."""
         # ensure they're in the chan.
         if self not in c:
@@ -655,7 +655,8 @@ class Player:
         c.remove(self) # remove from c.players
         self.channels.remove(c) # remove from p.channels
 
-        self.enqueue(packets.channelKick(c.name))
+        if kick:
+            self.enqueue(packets.channelKick(c.name))
 
         # update channel usercounts for all clients that can see.
         # for instanced channels, enqueue update to only players
@@ -748,7 +749,7 @@ class Player:
 
     async def remove_friend(self, p: 'Player') -> None:
         """Attempt to remove `p` from `self`'s friends."""
-        if not p.id in self.friends:
+        if p.id not in self.friends:
             log(f'{self} tried to remove {p}, who is not their friend!', Ansi.LYELLOW)
             return
 
@@ -761,8 +762,18 @@ class Player:
 
         log(f'{self} removed {p} from their friends.')
 
-    async def fetch_geoloc(self, ip: str) -> None:
-        """Fetch a player's geolocation data based on their ip."""
+    def fetch_geoloc_db(self, ip: str) -> None:
+        """Fetch geolocation data based on ip (using local db)."""
+        res = glob.geoloc_db.city(ip)
+
+        iso_code = res.country.iso_code
+        loc = res.location
+
+        self.country = (country_codes[iso_code], iso_code)
+        self.location = (loc.latitude, loc.longitude)
+
+    async def fetch_geoloc_web(self, ip: str) -> None:
+        """Fetch geolocation data based on ip (using ip-api)."""
         url = f'http://ip-api.com/line/{ip}'
 
         async with glob.http.get(url) as resp:
@@ -773,14 +784,16 @@ class Player:
             status, *lines = (await resp.text()).split('\n')
 
             if status != 'success':
-                log(f'Failed to get geoloc data: {lines[0]}.', Ansi.LRED)
+                err_msg = lines[0]
+                if err_msg == 'invalid query':
+                    err_msg += f' ({url})'
+
+                log(f'Failed to get geoloc data: {err_msg}.', Ansi.LRED)
                 return
 
-        country = lines[1]
+        iso_code = lines[1]
 
-        # store their country as a 2-letter code, and as a number.
-        # the players location is stored for the ingame world map.
-        self.country = (country_codes[country], country)
+        self.country = (country_codes[iso_code], iso_code)
         self.location = (float(lines[6]), float(lines[7])) # lat, long
 
     async def unlock_achievement(self, a: 'Achievement') -> None:
@@ -793,61 +806,6 @@ class Player:
         )
 
         self.achievements[a.mode].add(a)
-
-    async def update_stats(self, mode: GameMode = GameMode.vn_std) -> None:
-        """Update a player's stats in-game and in sql."""
-        table = mode.sql_table
-
-        res = await glob.db.fetchall(
-            f'SELECT s.pp, s.acc FROM {table} s '
-            'INNER JOIN maps m ON s.map_md5 = m.md5 '
-            'WHERE s.userid = %s AND s.mode = %s '
-            'AND s.status = 2 AND m.status IN (2, 3) ' # ranked, approved
-            'ORDER BY s.pp DESC LIMIT 100',
-            [self.id, mode.as_vanilla]
-        )
-
-        if not res:
-            breakpoint()
-            return # ?
-
-        stats = self.stats[mode]
-
-        # increment playcount
-        stats.plays += 1
-
-        # calculate avg acc based on top 100 scores
-        tot = div = 0
-        for i, row in enumerate(res):
-            add = int((0.95 ** i) * 100)
-            tot += row['acc'] * add
-            div += add
-
-        stats.acc = tot / div
-
-        # calculate weighted pp based on top 100 scores
-        stats.pp = round(sum([row['pp'] * 0.95 ** i
-                              for i, row in enumerate(res)]))
-
-        # keep stats up to date in sql
-        await glob.db.execute(
-            'UPDATE stats SET pp_{0:sql} = %s, '
-            'plays_{0:sql} = plays_{0:sql} + 1, '
-            'acc_{0:sql} = %s WHERE id = %s'.format(mode),
-            [stats.pp, stats.acc, self.id]
-        )
-
-        # calculate rank.
-        res = await glob.db.fetch(
-            'SELECT COUNT(*) AS c FROM stats s '
-            'INNER JOIN users u USING(id) '
-            f'WHERE s.pp_{mode:sql} > %s '
-            'AND u.priv & 1',
-            [stats.pp]
-        )
-
-        stats.rank = res['c'] + 1
-        self.enqueue(packets.userStats(self))
 
     async def friends_from_sql(self) -> None:
         """Retrieve `self`'s friends from sql."""
@@ -870,7 +828,7 @@ class Player:
             )
 
             if not res:
-                # user has no achievements for this mode.
+                # user has no achievements for this mode
                 continue
 
             # get cached achievements for this mode
@@ -888,7 +846,7 @@ class Player:
             res = await glob.db.fetch(
                 'SELECT tscore_{0:sql} tscore, rscore_{0:sql} rscore, '
                 'pp_{0:sql} pp, plays_{0:sql} plays, acc_{0:sql} acc, '
-                'playtime_{0:sql} playtime, maxcombo_{0:sql} max_combo '
+                'playtime_{0:sql} playtime, max_combo_{0:sql} max_combo '
                 'FROM stats WHERE id = %s'.format(mode),
                 [self.id]
             )
@@ -899,39 +857,16 @@ class Player:
 
             # calculate rank.
             res['rank'] = (await glob.db.fetch(
-                'SELECT COUNT(*) AS c FROM stats '
-                'INNER JOIN users USING(id) '
-                f'WHERE pp_{mode:sql} > %s '
-                'AND priv & 1', [res['pp']]
-            ))['c'] + 1
+                'SELECT COUNT(*) AS higher_pp_players '
+                'FROM stats s '
+                'INNER JOIN users u USING(id) '
+                f'WHERE s.pp_{mode:sql} > %s '
+                'AND u.priv & 1 and u.id != %s',
+                [res['pp'], self.id]
+            ))['higher_pp_players'] + 1
 
             # update stats
             self.stats[mode] = ModeData(**res)
-
-    async def stats_from_sql(self, mode: GameMode) -> None:
-        """Retrieve `self`'s `mode` stats from sql."""
-        res = await glob.db.fetch(
-            'SELECT tscore_{0:sql} tscore, rscore_{0:sql} rscore, '
-            'pp_{0:sql} pp, plays_{0:sql} plays, acc_{0:sql} acc, '
-            'playtime_{0:sql} playtime, maxcombo_{0:sql} max_combo '
-            'FROM stats WHERE id = %s'.format(mode),
-            [self.id]
-        )
-
-        if not res:
-            log(f"Failed to fetch {self}'s {mode!r} stats.", Ansi.LRED)
-            return
-
-        # calculate rank.
-        res['rank'] = await glob.db.fetch(
-            'SELECT COUNT(*) AS c FROM stats '
-            'INNER JOIN users USING(id) '
-            f'WHERE pp_{mode:sql} > %s '
-            'AND priv & 1',
-            [res['pp']]
-        )['c']
-
-        self.stats[mode] = ModeData(**res)
 
     async def add_to_menu(
         self, coroutine: Coroutine,

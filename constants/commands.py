@@ -7,6 +7,7 @@ import os
 import pprint
 import random
 import re
+import secrets
 import signal
 import struct
 import time
@@ -164,8 +165,48 @@ async def roll(ctx: Context) -> str:
     else:
         max_roll = 100
 
+    if max_roll == 0:
+        return "Roll what?"
+
     points = random.randrange(0, max_roll)
     return f'{ctx.player.name} rolls {points} points!'
+
+@command(Privileges.Normal)
+async def reconnect(ctx: Context) -> str:
+    """Disconnect and reconnect to the server."""
+    ctx.player.logout()
+
+@command(Privileges.Normal)
+async def changename(ctx: Context) -> str:
+    """Change your username."""
+    name = ' '.join(ctx.args)
+
+    if not regexes.username.match(name):
+        return 'Must be 2-15 characters in length.'
+
+    if '_' in name and ' ' in name:
+        return 'May contain "_" and " ", but not both.'
+
+    if name in glob.config.disallowed_names:
+        return 'Disallowed username; pick another.'
+
+    if await glob.db.fetch('SELECT 1 FROM users WHERE name = %s', [name]):
+        return 'Username already taken by another player.'
+
+    # all checks passed, update their name
+    safe_name = name.lower().replace(' ', '_')
+
+    await glob.db.execute(
+        'UPDATE users '
+        'SET name = %s, safe_name = %s '
+        'WHERE id = %s',
+        [name, safe_name, ctx.player.id]
+    )
+
+    ctx.player.enqueue(packets.notification(
+        f'Your username has been changed to {name}!')
+    )
+    ctx.player.logout()
 
 @command(Privileges.Normal, aliases=['bloodcat', 'beatconnect', 'chimu', 'q'])
 async def maplink(ctx: Context) -> str:
@@ -287,9 +328,7 @@ async def _with(ctx: Context) -> str:
 
     if key_value is not None:
         # custom param specified, calculate it on the fly.
-        ppcalc = await PPCalculator.from_id(
-            map_id=bmap.id, **pp_attrs
-        )
+        ppcalc = await PPCalculator.from_map(bmap, **pp_attrs)
         if not ppcalc:
             return 'Could not retrieve map file.'
 
@@ -320,8 +359,9 @@ async def _with(ctx: Context) -> str:
 
         pp_values = zip(_keys, pp_cache)
 
-    return ' | '.join([f'{k}: {pp:,.2f}pp'
-                       for k, pp in pp_values])
+    _mods = f'+{mods!r} ' if mods else ''
+    return _mods + ' | '.join([f'{k}: {pp:,.2f}pp'
+                               for k, pp in pp_values])
 
 @command(Privileges.Normal, aliases=['req'])
 async def request(ctx: Context) -> str:
@@ -515,7 +555,7 @@ async def notes(ctx: Context) -> str:
     if not res:
         return f'No notes found on {t} in the past {days} days.'
 
-    return '\n'.join(map(lambda row: '[{time}] {msg}'.format(**row), res))
+    return '\n'.join(['[{time}] {msg}'.format(**row) for row in res])
 
 @command(Privileges.Mod, hidden=True)
 async def addnote(ctx: Context) -> str:
@@ -557,7 +597,10 @@ async def silence(ctx: Context) -> str:
     if not (t := await glob.players.get_ensure(name=ctx.args[0])):
         return f'"{ctx.args[0]}" not found.'
 
-    if t.priv & Privileges.Staff and not ctx.player.priv & Privileges.Dangerous:
+    if (
+        t.priv & Privileges.Staff and
+        not ctx.player.priv & Privileges.Dangerous
+    ):
         return 'Only developers can manage staff members.'
 
     if not (rgx := regexes.scaled_duration.match(ctx.args[1])):
@@ -589,7 +632,10 @@ async def unsilence(ctx: Context) -> str:
     if not t.silenced:
         return f'{t} is not silenced.'
 
-    if t.priv & Privileges.Staff and not ctx.player.priv & Privileges.Dangerous:
+    if (
+        t.priv & Privileges.Staff and
+        not ctx.player.priv & Privileges.Dangerous
+    ):
         return 'Only developers can manage staff members.'
 
     await t.unsilence(ctx.player)
@@ -610,7 +656,10 @@ async def restrict(ctx: Context) -> str:
     if not (t := await glob.players.get_ensure(name=ctx.args[0])):
         return f'"{ctx.args[0]}" not found.'
 
-    if t.priv & Privileges.Staff and not ctx.player.priv & Privileges.Dangerous:
+    if (
+        t.priv & Privileges.Staff and
+        not ctx.player.priv & Privileges.Dangerous
+    ):
         return 'Only developers can manage staff members.'
 
     if t.restricted:
@@ -885,9 +934,7 @@ async def recalc(ctx: Context) -> str:
 
         bmap = ctx.player.last_np['bmap']
 
-        ppcalc = await PPCalculator.from_id(
-            map_id=bmap.id, mode_vn=mode_vn
-        )
+        ppcalc = await PPCalculator.from_map(bmap, mode_vn=mode_vn)
 
         if not ppcalc:
             return 'Could not retrieve map file.'
@@ -1032,6 +1079,12 @@ async def reload(ctx: Context) -> str:
 async def server(ctx: Context) -> str:
     """Retrieve performance data about the server."""
 
+    build_str = f'gulag v{glob.version!r} ({glob.config.domain})'
+
+    # get info about this process
+    proc = psutil.Process(os.getpid())
+    uptime = int(time.time() - proc.create_time())
+
     # get info about our cpu
     with open('/proc/cpuinfo') as f:
         header = 'model name\t: '
@@ -1043,30 +1096,36 @@ async def server(ctx: Context) -> str:
             if line.startswith('model name')
         )
 
+    # list of all cpus installed with thread count
+    cpus_info = ' | '.join(f'{v}x {k}' for k, v in model_names.most_common())
+
     # get system-wide ram usage
     sys_ram = psutil.virtual_memory()
 
-    # get info about this process
-    proc = psutil.Process(os.getpid())
-    uptime = int(time.time() - proc.create_time())
+    # output ram usage as `{gulag_used}MB / {sys_used}MB / {sys_total}MB`
     gulag_ram = proc.memory_info()[0]
+    ram_values = (gulag_ram, sys_ram.used, sys_ram.total)
+    ram_info = ' / '.join(f'{v // 1024 ** 2}MB' for v in ram_values)
 
     # divide up pkg versions, 3 displayed per line, e.g.
-    # aiohttp v3.6.3 | aiomysql v0.0.20 | asyncpg v0.21.0
-    # aiomysql v0.0.20 | asyncpg v0.21.0 | bcrypt v3.2.0
-    # asyncpg v0.21.0 | bcrypt v3.2.0 | cmyui v1.6.6
+    # aiohttp v3.6.3 | aiomysql v0.0.21 | bcrypt v3.2.0
+    # cmyui v1.7.3 | datadog v0.40.1 | geoip2 v4.1.0
+    # maniera v1.0.0 | mysql-connector-python v8.0.23 | orjson v3.5.1
+    # psutil v5.8.0 | py3rijndael v0.3.3 | uvloop v0.15.2
     reqs = (Path.cwd() / 'ext/requirements.txt').read_text().splitlines()
     pkg_sections = [reqs[i:i+3] for i in range(0, len(reqs), 3)]
 
-    # output as `{gulag_used}MB / {sys_used}MB / {sys_total}MB`
-    ram_values = (gulag_ram, sys_ram.used, sys_ram.total)
+    mirror_url = glob.config.mirror
+    using_osuapi = glob.config.osu_api_key != ''
+    advanced_mode = glob.config.advanced
+    auto_logging = glob.config.automatically_report_problems
 
     return '\n'.join([
-        f'gulag v{glob.version!r} | uptime: {seconds_readable(uptime)}',
-        f'cpu(s): {" | ".join(f"{v}x {k}" for k, v in model_names.most_common())}',
-        f'ram: {" / ".join(f"{v // 1024 ** 2}MB" for v in ram_values)}',
-        f'production mode: {glob.config.production} | advanced mode: {glob.config.advanced}',
-        f'mirror: {glob.config.mirror} | osu!api connection: {glob.config.osu_api_key != ""}',
+        f'{build_str} | uptime: {seconds_readable(uptime)}',
+        f'cpu(s): {cpus_info}',
+        f'ram: {ram_info}',
+        f'mirror: {mirror_url} | osu!api connection: {using_osuapi}',
+        f'advanced mode: {advanced_mode} | auto logging: {auto_logging}',
         '',
         'requirements',
         '\n'.join([' | '.join([
@@ -1087,7 +1146,7 @@ if glob.config.advanced:
     __py_namespace = globals() | {
         mod: __import__(mod) for mod in (
             'asyncio', 'dis', 'os', 'sys', 'struct', 'discord',
-            'cmyui',  'datetime', 'time', 'inspect', 'math',
+            'cmyui', 'datetime', 'time', 'inspect', 'math',
             'importlib'
         ) if mod in installed_mods
     }
@@ -1291,7 +1350,7 @@ async def mp_host(ctx: Context) -> str:
 @mp_commands.add(Privileges.Normal)
 async def mp_randpw(ctx: Context) -> str:
     """Randomize the current match's password."""
-    ctx.match.passwd = cmyui.rstring(16)
+    ctx.match.passwd = secrets.token_hex(8)
     return 'Match password randomized.'
 
 @mp_commands.add(Privileges.Normal, aliases=['inv'])
@@ -1921,7 +1980,7 @@ async def clan_create(ctx: Context) -> str:
     created_at = datetime.now()
 
     # add clan to sql (generates id)
-    id = await glob.db.execute(
+    clan_id = await glob.db.execute(
         'INSERT INTO clans '
         '(name, tag, created_at, owner) '
         'VALUES (%s, %s, %s, %s)',
@@ -1929,11 +1988,11 @@ async def clan_create(ctx: Context) -> str:
     )
 
     # add clan to cache
-    clan = Clan(id=id, name=name, tag=tag,
+    clan = Clan(id=clan_id, name=name, tag=tag,
                 created_at=created_at, owner=ctx.player.id)
     glob.clans.append(clan)
 
-    # set owner's clan & clan rank (cache & sql)
+    # set owner's clan & clan priv (cache & sql)
     ctx.player.clan = clan
     ctx.player.clan_priv = ClanPrivileges.Owner
 
@@ -1948,7 +2007,7 @@ async def clan_create(ctx: Context) -> str:
         'SET clan_id = %s, '
         'clan_priv = 3 ' # ClanPrivileges.Owner
         'WHERE id = %s',
-        [id, ctx.player.id]
+        [clan_id, ctx.player.id]
     )
 
     # TODO: take currency from player
@@ -1983,7 +2042,7 @@ async def clan_disband(ctx: Context) -> str:
     )
 
     # remove all members from the clan,
-    # reset their clan rank (cache & sql).
+    # reset their clan privs (cache & sql).
     # NOTE: only online players need be to be uncached.
     for m in [glob.players.get(id=p_id) for p_id in clan.members]:
         if 'full_name' in m.__dict__:
@@ -2025,7 +2084,7 @@ async def clan_info(ctx: Context) -> str:
     datetime_fmt = f'Founded at {_time} on {_date}'
     msg = [f"{owner.embed}'s {clan!r} | {datetime_fmt}."]
 
-    # get members ranking from sql
+    # get members privs from sql
     res = await glob.db.fetchall(
         'SELECT name, clan_priv '
         'FROM users '
@@ -2034,8 +2093,8 @@ async def clan_info(ctx: Context) -> str:
     )
 
     for name, clan_priv in sorted(res, key=lambda row: row[1]):
-        rank_str = ('Member', 'Officer', 'Owner')[clan_priv - 1]
-        msg.append(f'[{rank_str}] {name}')
+        priv_str = ('Member', 'Officer', 'Owner')[clan_priv - 1]
+        msg.append(f'[{priv_str}] {name}')
 
     return '\n'.join(msg)
 

@@ -8,25 +8,18 @@
 # osu!'s built-in registration.
 # certificate: https://akatsuki.pw/static/ca.crt
 
-import sys
-
-sys._excepthook = sys.excepthook # backup
-def _excepthook(type, value, traceback):
-    if type is KeyboardInterrupt:
-        print('\33[2K\r', end='Aborted startup.')
-        return
-    print('\x1b[0;31mgulag ran into an issue '
-          'before starting up :(\x1b[0m')
-    sys._excepthook(type, value, traceback)
-sys.excepthook = _excepthook
+import utils.misc
+utils.misc.install_excepthook()
 
 import os
+import sys
 from pathlib import Path
 
 import aiohttp
 import cmyui
 import datadog
 import orjson # go zoom
+import geoip2.database
 from cmyui import Ansi
 from cmyui import log
 
@@ -40,7 +33,6 @@ from objects.collections import ChannelList
 from objects.collections import ClanList
 from objects.collections import MapPoolList
 from objects.player import Player
-from utils.misc import download_achievement_pngs
 from utils.updater import Updater
 
 __all__ = ()
@@ -48,7 +40,9 @@ __all__ = ()
 # current version of gulag
 # NOTE: this is used internally for the updater, it may be
 # worth reading through it's code before playing with it.
-glob.version = cmyui.Version(3, 2, 5)
+glob.version = cmyui.Version(3, 2, 9)
+
+GEOLOC_DB_FILE = Path.cwd() / 'ext/GeoLite2-City.mmdb'
 
 async def setup_collections() -> None:
     """Setup & cache many global collections (mostly from sql)."""
@@ -60,10 +54,13 @@ async def setup_collections() -> None:
     glob.pools = await MapPoolList.prepare() # active mappools
 
     # create our bot & append it to the global player list.
-    res = await glob.db.fetch('SELECT name FROM users WHERE id = 1')
+    bot_name = (await glob.db.fetch(
+        'SELECT name FROM users '
+        'WHERE id = 1', _dict=False
+    ))[0]
 
     glob.bot = Player(
-        id = 1, name = res['name'], priv = Privileges.Normal,
+        id = 1, name = bot_name, priv = Privileges.Normal,
         login_time = float(0x7fffffff), # never auto-dc
         bot_client = True
     )
@@ -104,6 +101,13 @@ async def before_serving() -> None:
     await updater.run()
     await updater.log_startup()
 
+    # open a connection to our local geoloc database,
+    # if the database file is present.
+    if GEOLOC_DB_FILE.exists():
+        glob.geoloc_db = geoip2.database.Reader(str(GEOLOC_DB_FILE))
+    else:
+        glob.geoloc_db = None
+
     # cache many global collections/objects from sql,
     # such as channels, mappools, clans, bot, etc.
     await setup_collections()
@@ -136,33 +140,56 @@ async def after_serving() -> None:
     if hasattr(glob, 'db') and glob.db.pool is not None:
         await glob.db.close()
 
+    if hasattr(glob, 'geoloc_db') and glob.geoloc_db is not None:
+        glob.geoloc_db.close()
+
     if hasattr(glob, 'datadog') and glob.datadog is not None:
         glob.datadog.stop() # stop thread
         glob.datadog.flush() # flush any leftover
 
+def detect_mysqld_running() -> None:
+    for path in (
+        '/var/run/mysqld/mysqld.pid',
+        '/var/run/mariadb/mariadb.pid'
+    ):
+        if os.path.exists(path):
+            # path found
+            return True
+    else:
+        # not found, try pgrep
+        return os.system('pgrep mysqld') == 0
+
 if __name__ == '__main__':
     # attempt to start up gulag.
+    if sys.platform != 'linux':
+        log('gulag currently only supports linux', Ansi.LRED)
+        if sys.platform == 'win32':
+            log("you could also try wsl(2), i'd recommend ubuntu 18.04 "
+                "(i use it to test gulag)", Ansi.LBLUE)
+        sys.exit()
+
     if sys.version_info < (3, 9):
-        sys.exit('The minimum python version for gulag is 3.9')
+        sys.exit('gulag uses many modern python features, '
+                 'and the minimum python version is 3.9.')
 
     # make sure nginx & mysqld are running.
     if (
         glob.config.mysql['host'] in ('localhost', '127.0.0.1') and
-        not os.path.exists('/var/run/mysqld/mysqld.pid')
+        not detect_mysqld_running()
     ):
         sys.exit('Please start your mysqld server.')
 
     if not os.path.exists('/var/run/nginx.pid'):
         sys.exit('Please start your nginx server.')
 
-    if glob.config.production:
-        if os.geteuid() == 0:
-            log('It is not recommended to run gulag as root, '
-                'especially in production..', Ansi.LYELLOW)
+    # warn if gulag is running on root.
+    if os.geteuid() == 0:
+        log('It is not recommended to run gulag as root, '
+            'especially in production..', Ansi.LYELLOW)
 
-            if glob.config.advanced:
-                log('The risk is even greater with features '
-                    'such as config.advanced enabled.', Ansi.LRED)
+        if glob.config.advanced:
+            log('The risk is even greater with features '
+                'such as config.advanced enabled.', Ansi.LRED)
 
     # set cwd to /gulag.
     os.chdir(os.path.dirname(os.path.realpath(__file__)))
@@ -177,9 +204,9 @@ if __name__ == '__main__':
 
     achievements_path = data_path / 'assets/medals/client'
     if not achievements_path.exists():
-        # create directory & download achievement pngs
+        # create directory & download achievement images
         achievements_path.mkdir(parents=True)
-        download_achievement_pngs(achievements_path)
+        utils.misc.download_achievement_images(achievements_path)
 
     # make sure oppai-ng is built and ready.
     glob.oppai_built = (Path.cwd() / 'oppai-ng/oppai').exists()
@@ -223,9 +250,8 @@ if __name__ == '__main__':
     else:
         glob.datadog = None
 
-    # start up the server; this starts
-    # an event loop internally, using
-    # uvloop if it's installed.
-    app.run(glob.config.server_addr,
-            handle_signals=True, # SIGHUP, SIGTERM, SIGINT
-            sigusr1_restart=True) # use SIGUSR1 for restarts
+    # start up the server; this starts an event loop internally,
+    # using uvloop if it's installed. it uses SIGUSR1 for restarts.
+    # NOTE: eventually the event loop creation will likely be
+    # moved into the gulag codebase for increased flexibility.
+    app.run(glob.config.server_addr, handle_restart=True)

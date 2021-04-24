@@ -13,10 +13,10 @@ from cmyui.discord import Embed
 from cmyui import log, Ansi
 
 import packets
+import utils.misc
 from constants.gamemodes import GameMode
 from constants.privileges import Privileges
 from objects import glob
-from utils.misc import get_press_times
 
 if TYPE_CHECKING:
     from objects.score import Score
@@ -106,13 +106,12 @@ async def analyze_score(score: 'Score') -> None:
         # for any gamemode with holds. it's still relatively
         # reliable for taiko though :D.
 
-        press_times = get_press_times(frames)
+        press_times = utils.misc.get_press_times(frames)
         config = glob.config.surveillance['hitobj_low_presstimes']
 
-        cond = lambda pt: (sum(pt) / len(pt) < config['value']
-                           and len(pt) > config['min_presses'])
-
-        if any(map(cond, press_times.values())):
+        if any([sum(pt) / len(pt) < config['value'] and
+                len(pt) > config['min_presses']
+                for pt in press_times.values()]):
             # at least one of the keys is under the
             # minimum, log this occurence to Discord.
             webhook_url = glob.config.webhooks['surveillance']

@@ -25,18 +25,18 @@ if TYPE_CHECKING:
     from objects.player import Player
 
 __all__ = (
-    'Rank',
+    'Grade',
     'SubmissionStatus',
     'Score'
 )
 
 @unique
 @pymysql_encode(escape_enum)
-class Rank(IntEnum):
-    XH = 0
-    SH = 1
-    X  = 2
-    S  = 3
+class Grade(IntEnum):
+    XH = 0 # HD SS
+    X  = 1 # SS
+    SH = 2 # HD S
+    S  = 3 # S
     A  = 4
     B  = 5
     C  = 6
@@ -47,8 +47,8 @@ class Rank(IntEnum):
     def __str__(self) -> str:
         return {
             self.XH: 'SS',
-            self.SH: 'SS',
-            self.X: 'S',
+            self.X: 'SS',
+            self.SH: 'S',
             self.S: 'S',
             self.A: 'A',
             self.B: 'B',
@@ -56,6 +56,19 @@ class Rank(IntEnum):
             self.D: 'D',
             self.F: 'F'
         }[self.value]
+
+    @classmethod
+    def from_str(cls, s: str, hidden: bool = False) -> 'Grade':
+        return {
+            'SS': cls.XH if hidden else cls.SH,
+            'S': cls.SH if hidden else cls.S,
+            'A': cls.A,
+            'B': cls.B,
+            'C': cls.C,
+            'D': cls.D,
+            'F': cls.F,
+            'N': cls.N
+        }[s]
 
 @unique
 @pymysql_encode(escape_enum)
@@ -120,7 +133,7 @@ class Score:
     nkatu: `int`
         The number of katus in the score.
 
-    grade: `str`
+    grade: `Grade`
         The letter grade in the score.
 
     rank: `int`
@@ -185,7 +198,7 @@ class Score:
         self.nmiss: Optional[int] = None
         self.ngeki: Optional[int] = None
         self.nkatu: Optional[int] = None
-        self.grade: Optional[Rank] = None
+        self.grade: Optional[Grade] = None
 
         self.rank: Optional[int] = None
         self.passed: Optional[bool] = None
@@ -283,7 +296,7 @@ class Score:
         # perhaps will use to improve security at some point?
 
         # ensure all ints are safe to cast.
-        if not all(map(lambda x: x.isdecimal(), data[3:11] + [data[13], data[15]])):
+        if not all(map(str.isdecimal, data[3:11] + [data[13], data[15]])):
             log('Invalid parameter passed into submit-modular.', Ansi.LRED)
             return
 
@@ -312,8 +325,10 @@ class Score:
             s.rank = await s.calc_lb_placement()
         else:
             s.pp = s.sr = 0.0
-            s.status = SubmissionStatus.SUBMITTED if s.passed \
-                  else SubmissionStatus.FAILED
+            if s.passed:
+                s.status = SubmissionStatus.SUBMITTED
+            else:
+                s.status = SubmissionStatus.FAILED
 
         return s
 
@@ -369,7 +384,7 @@ class Score:
                 'mode_vn': mode_vn
             }
 
-        ppcalc = await PPCalculator.from_id(map_id=self.bmap.id, **pp_attrs)
+        ppcalc = await PPCalculator.from_map(self.bmap, **pp_attrs)
 
         if not ppcalc:
             return (0.0, 0.0)

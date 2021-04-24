@@ -17,6 +17,7 @@ from cmyui import log
 from cmyui.discord import Webhook
 
 import packets
+import utils.misc
 from constants import commands
 from constants import regexes
 from constants.gamemodes import GameMode
@@ -39,7 +40,6 @@ from objects.player import PresenceFilter
 from packets import BanchoPacket
 from packets import BanchoPacketReader
 from packets import Packets
-from utils.misc import make_safe_name
 
 from utils.catgirlmoe import sendLogin
 from utils.catgirlmoe import sendLogout
@@ -302,8 +302,9 @@ class Logout(BanchoPacket, type=Packets.OSU_LOGOUT):
 
     async def handle(self, p: Player) -> None:
         if (time.time() - p.login_time) < 1:
-            # osu! has a weird tendency to log out immediately when
-            # it logs in, then reconnects? not sure why..?
+            # osu! has a weird tendency to log out immediately after login.
+            # i've tested the times and they're generally 300-800ms, so
+            # we'll block any logout request within 1 second from login.
             return
 
         p.logout()
@@ -435,7 +436,7 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
         'SELECT id, name, priv, pw_bcrypt, '
         'silence_end, clan_id, clan_priv, api_key '
         'FROM users WHERE safe_name = %s',
-        [make_safe_name(username)]
+        [utils.misc.make_safe_name(username)]
     )
 
     if not user_info:
@@ -545,7 +546,7 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
 
             log(msg_content, Ansi.LRED)
 
-    # get clan & clan rank if we're in a clan
+    # get clan & clan priv if we're in a clan
     if user_info['clan_id'] != 0:
         clan = glob.clans.get(id=user_info.pop('clan_id'))
         clan_priv = ClanPrivileges(user_info.pop('clan_priv'))
@@ -615,10 +616,13 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
     await p.stats_from_sql_full()
     await p.friends_from_sql()
 
-    if glob.config.production:
-        # update their country data with
-        # the IP from the login request.
-        await p.fetch_geoloc(ip)
+    if ip != '127.0.0.1':
+        if glob.geoloc_db is not None:
+            # use local db
+            p.fetch_geoloc_db(ip)
+        else:
+            # use ip-api
+            await p.fetch_geoloc_web(ip)
 
     data += packets.mainMenuIcon()
     data += packets.friendsList(*p.friends)
@@ -724,6 +728,11 @@ class StartSpectating(BanchoPacket, type=Packets.OSU_START_SPECTATING):
             return
 
         if current_host := p.spectating:
+            if current_host == new_host:
+                # client asking to spec when already
+                # speccing, likely downloaded new map.
+                return
+
             current_host.remove_spectator(p)
 
         new_host.add_spectator(p)
@@ -918,7 +927,7 @@ class SendPrivateMessage(BanchoPacket, type=Packets.OSU_SEND_PRIVATE_MESSAGE):
 @register
 class LobbyPart(BanchoPacket, type=Packets.OSU_PART_LOBBY):
     async def handle(self, p: Player) -> None:
-        p.in_lobby=False
+        p.in_lobby = False
 
 @register
 class LobbyJoin(BanchoPacket, type=Packets.OSU_JOIN_LOBBY):
@@ -934,6 +943,15 @@ class MatchCreate(BanchoPacket, type=Packets.OSU_CREATE_MATCH):
 
     async def handle(self, p: Player) -> None:
         # TODO: match validation..?
+        if p.restricted:
+            p.enqueue(
+                packets.matchJoinFail() +
+                packets.notification(
+                    'Multiplayer is not available while restricted.'
+                )
+            )
+            return
+
         if p.silenced:
             p.enqueue(
                 packets.matchJoinFail() +
@@ -1001,6 +1019,15 @@ class MatchJoin(BanchoPacket, type=Packets.OSU_JOIN_MATCH):
         if not (m := glob.matches[self.match_id]):
             log(f'{p} tried to join a non-existant mp lobby?')
             p.enqueue(packets.matchJoinFail())
+            return
+
+        if p.restricted:
+            p.enqueue(
+                packets.matchJoinFail() +
+                packets.notification(
+                    'Multiplayer is not available while restricted.'
+                )
+            )
             return
 
         if p.silenced:

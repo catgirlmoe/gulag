@@ -4,7 +4,6 @@
 # in a lot of these classes; needs refactor.
 
 import asyncio
-from typing import Any
 from typing import Optional
 from typing import Iterator
 from typing import Union
@@ -14,9 +13,11 @@ from cmyui import Ansi
 
 from constants.privileges import Privileges
 from objects import glob
-from objects.clan import Clan, ClanPrivileges
+from objects.clan import Clan
+from objects.clan import ClanPrivileges
 from objects.channel import Channel
-from objects.match import Match, MapPool
+from objects.match import MapPool
+from objects.match import Match
 from objects.player import Player
 from utils.misc import make_safe_name
 
@@ -51,7 +52,7 @@ class ChannelList(list):
         if isinstance(index, str):
             return self.get(index)
         else:
-            return self[index]
+            return super().__getitem__(index)
 
     def __repr__(self) -> str:
         # XXX: we use the "real" name, aka
@@ -114,9 +115,6 @@ class MatchList(list):
 
     def append(self, m: 'Match') -> bool:
         """Append `m` to the list."""
-        if m in self:
-            breakpoint()
-
         if (free := self.get_free()) is not None:
             # set the id of the match to the free slot.
             m.id = free
@@ -189,7 +187,7 @@ class PlayerList(list):
                 p.enqueue(data)
 
     @staticmethod
-    def _parse_attr(kwargs: dict[str, Any]) -> Optional[tuple[str, Any]]:
+    def _parse_attr(kwargs: dict[str, object]) -> Optional[tuple[str, object]]:
         """Get first matched attr & val from input kwargs. Used in get() methods."""
         for attr in ('token', 'id', 'name'):
             if val := kwargs.pop(attr, None):

@@ -169,11 +169,7 @@ create table ratings
 	userid int not null,
 	map_md5 char(32) not null,
 	rating tinyint(2) not null,
-	primary key (userid, map_md5),
-	constraint ratings_map_md5_uindex
-		unique (map_md5),
-	constraint ratings_userid_uindex
-		unique (userid)
+	primary key (userid, map_md5)
 );
 
 create table scores_ap
@@ -316,14 +312,14 @@ create table stats
 	acc_rx_taiko float(6,3) default 0.000 not null,
 	acc_rx_catch float(6,3) default 0.000 not null,
 	acc_ap_std float(6,3) default 0.000 not null,
-	maxcombo_vn_std int(11) unsigned default 0 not null,
-	maxcombo_vn_taiko int(11) unsigned default 0 not null,
-	maxcombo_vn_catch int(11) unsigned default 0 not null,
-	maxcombo_vn_mania int(11) unsigned default 0 not null,
-	maxcombo_rx_std int(11) unsigned default 0 not null,
-	maxcombo_rx_taiko int(11) unsigned default 0 not null,
-	maxcombo_rx_catch int(11) unsigned default 0 not null,
-	maxcombo_ap_std int(11) unsigned default 0 not null
+	max_combo_vn_std int(11) unsigned default 0 not null,
+	max_combo_vn_taiko int(11) unsigned default 0 not null,
+	max_combo_vn_catch int(11) unsigned default 0 not null,
+	max_combo_vn_mania int(11) unsigned default 0 not null,
+	max_combo_rx_std int(11) unsigned default 0 not null,
+	max_combo_rx_taiko int(11) unsigned default 0 not null,
+	max_combo_rx_catch int(11) unsigned default 0 not null,
+	max_combo_ap_std int(11) unsigned default 0 not null
 );
 
 create table tourney_pool_maps
@@ -355,16 +351,6 @@ create table user_achievements
 	userid int not null,
 	achid int not null,
 	primary key (userid, achid)
-);
-
-create table user_hashes
-(
-	id int auto_increment
-		primary key,
-	osupath char(32) not null,
-	adapters char(32) not null,
-	uninstall_id char(32) not null,
-	disk_serial char(32) not null
 );
 
 create table users
