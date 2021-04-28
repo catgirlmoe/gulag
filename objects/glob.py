@@ -34,8 +34,7 @@ __all__ = (
     'pools', 'clans', 'achievements',
     'version', 'bot', 'api_keys',
     'bancho_packets', 'db', 'http',
-    'datadog', 'sketchy_queue',
-    'oppai_built', 'cache'
+    'datadog', 'sketchy_queue', 'cache'
 )
 
 # server object
@@ -52,7 +51,7 @@ achievements: dict[int, list['Achievement']] # per vn gamemode
 bot: 'Player'
 version: 'Version'
 
-geoloc_db: 'geoip2.database.Reader'
+geoloc_db: 'Optional[geoip2.database.Reader]'
 
 # currently registered api tokens
 api_keys: dict[str, int] # {api_key: player_id}
@@ -67,9 +66,6 @@ datadog: 'Optional[ThreadStats]'
 
 # queue of submitted scores deemed 'sketchy'; to be analyzed.
 sketchy_queue: 'Queue[Score]'
-
-# whether or not the oppai-ng binary was located at startup.
-oppai_built: bool
 
 # gulag's main cache.
 # the idea here is simple - keep a copy of things either from sql or
@@ -91,7 +87,10 @@ cache = {
     # cache all beatmap data calculated while online. this way,
     # the most requested maps will inevitably always end up cached.
     'beatmap': {}, # {md5: {timeout, map}, ...}
-    # cache all beatmaps which we failed to get from the osuapi,
-    # so that we do not have to perform this request multiple times.
-    'unsubmitted': set() # {md5, ...}
+
+    # cache all beatmaps which are unsubmitted or need an update,
+    # since their osu!api requests will fail and thus we'll do the
+    # request multiple times which is quite slow & not great.
+    'unsubmitted': set(), # {md5, ...}
+    'needs_update': set() # {md5, ...}
 }

@@ -8,12 +8,12 @@ from datetime import timedelta as td
 from typing import Callable
 
 import bcrypt
-from cmyui import _isdecimal
-from cmyui import Ansi
-from cmyui import AnsiRGB
 from cmyui import Connection
 from cmyui import Domain
-from cmyui import log
+from cmyui.logging import log
+from cmyui.logging import Ansi
+from cmyui.logging import AnsiRGB
+from cmyui.utils import _isdecimal
 from cmyui.discord import Webhook
 
 import packets
@@ -441,7 +441,8 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
 
     if not user_info:
         # no account by this name exists.
-        return packets.userID(-1), 'no'
+        return (packets.notification(f'{BASE_DOMAIN}: Unknown username') +
+                packets.userID(-1)), 'no'
 
     tourney_privs = int(Privileges.Normal | Privileges.Donator)
 
@@ -463,10 +464,12 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
     # results to speed up subsequent logins.
     if pw_bcrypt in bcrypt_cache: # ~0.01 ms
         if pw_md5 != bcrypt_cache[pw_bcrypt]:
-            return packets.userID(-1), 'no'
+            return (packets.notification(f'{BASE_DOMAIN}: Incorrect login') +
+                    packets.userID(-1)), 'no'
     else: # ~200ms
         if not bcrypt.checkpw(pw_md5, pw_bcrypt):
-            return packets.userID(-1), 'no'
+            return (packets.notification(f'{BASE_DOMAIN}: Incorrect login') +
+                    packets.userID(-1)), 'no'
 
         bcrypt_cache[pw_bcrypt] = pw_md5
 
@@ -785,7 +788,8 @@ class SendPrivateMessage(BanchoPacket, type=Packets.OSU_SEND_PRIVATE_MESSAGE):
 
     async def handle(self, p: Player) -> None:
         if p.silenced:
-            log(f'{p} tried to send a dm while silenced.', Ansi.LYELLOW)
+            if glob.app.debug:
+                log(f'{p} tried to send a dm while silenced.', Ansi.LYELLOW)
             return
 
         # remove leading/trailing whitespace
@@ -795,18 +799,23 @@ class SendPrivateMessage(BanchoPacket, type=Packets.OSU_SEND_PRIVATE_MESSAGE):
         # allow this to get from sql - players can receive
         # messages offline, due to the mail system. B)
         if not (t := await glob.players.get_ensure(name=t_name)):
-            log(f'{p} tried to write to non-existent user {t_name}.', Ansi.LYELLOW)
+            if glob.app.debug:
+                log(f'{p} tried to write to non-existent user {t_name}.', Ansi.LYELLOW)
             return
 
         if t.pm_private and p.id not in t.friends:
             p.enqueue(packets.userDMBlocked(t_name))
-            log(f'{p} tried to message {t}, but they are blocking dms.')
+
+            if glob.app.debug:
+                log(f'{p} tried to message {t}, but they are blocking dms.')
             return
 
         if t.silenced:
             # if target is silenced, inform player.
             p.enqueue(packets.targetSilenced(t_name))
-            log(f'{p} tried to message {t}, but they are silenced.')
+
+            if glob.app.debug:
+                log(f'{p} tried to message {t}, but they are silenced.')
             return
 
         # limit message length to 2k chars
@@ -858,9 +867,7 @@ class SendPrivateMessage(BanchoPacket, type=Packets.OSU_SEND_PRIVATE_MESSAGE):
                         }
 
                         # calc pp if possible
-                        if mode_vn in (0, 1) and not glob.oppai_built:
-                            msg = 'No oppai-ng binary was found at startup.'
-                        elif mode_vn == 2: # TODO: catch
+                        if mode_vn == 2: # TODO: catch
                             msg = 'PP not yet supported for that mode.'
                         elif mode_vn == 3 and bmap.mode.as_vanilla != 3:
                             msg = 'Mania converts not yet supported.'
@@ -1154,7 +1161,8 @@ class MatchChangeSettings(BanchoPacket, type=Packets.OSU_MATCH_CHANGE_SETTINGS):
         if self.new.map_id == -1:
             # map being changed, unready players.
             m.unready_players(expected=SlotStatus.ready)
-        elif m.map_id == -1:
+            m.prev_map_id = m.map_id
+        elif m.map_id == -1 and m.prev_map_id != self.new.map_id:
             # new map has been chosen, send to match chat.
             m.chat.send_bot(f'Selected: {self.new.map_embed}.')
 
@@ -1478,7 +1486,7 @@ class FriendAdd(BanchoPacket, type=Packets.OSU_FRIEND_ADD):
             log(f'{p} tried to add a user who is not online! ({self.user_id})')
             return
 
-        if t.id == 1:
+        if t is glob.bot:
             # you cannot add the bot as a friend since it's already
             # your friend :]
             return
@@ -1495,7 +1503,7 @@ class FriendRemove(BanchoPacket, type=Packets.OSU_FRIEND_REMOVE):
             log(f'{p} tried to remove a user who is not online! ({self.user_id})')
             return
 
-        if t.id == 1:
+        if t is glob.bot:
             # you cannot remove the bot as a friend because it wont
             # like that >:[
             return

@@ -73,12 +73,12 @@ def make_safe_name(name: str) -> str:
 
 def _download_achievement_images_mirror(achievements_path: Path) -> bool:
     """Download all used achievement images (using mirror's zip)."""
+    log('Downloading achievement images from mirror.', Ansi.LCYAN)
     r = requests.get('https://cmyui.xyz/achievement_images.zip')
 
     if r.status_code != 200:
+        log('Failed to fetch from mirror, trying osu! servers.', Ansi.LRED)
         return False
-
-    log('Downloading achievement images from mirror.', Ansi.LCYAN)
 
     with io.BytesIO(r.content) as data:
         with zipfile.ZipFile(data) as myfile:
@@ -186,7 +186,8 @@ async def log_strange_occurrence(obj: object) -> None:
         # automatically reporting problems to cmyui's server
         async with glob.http.post(
             url = 'https://log.cmyui.xyz/',
-            headers = {'Gulag-Version': repr(glob.version)},
+            headers = {'Gulag-Version': repr(glob.version),
+                       'Gulag-Domain': glob.config.domain},
             data = pickled_obj,
         ) as resp:
             if (

@@ -203,8 +203,8 @@ async def changename(ctx: Context) -> str:
         [name, safe_name, ctx.player.id]
     )
 
-    ctx.player.enqueue(packets.notification(
-        f'Your username has been changed to {name}!')
+    ctx.player.enqueue(
+        packets.notification(f'Your username has been changed to {name}!')
     )
     ctx.player.logout()
 
@@ -226,7 +226,7 @@ async def maplink(ctx: Context) -> str:
     else:
         return 'No map found!'
 
-    return f'[https://osu.gatari.pw/d/{bmap.set_id} {bmap.full}]'
+    return f'[https://chimu.moe/d/{bmap.set_id} {bmap.full}]'
 
 @command(Privileges.Normal, aliases=['last', 'r'])
 async def recent(ctx: Context) -> str:
@@ -282,9 +282,6 @@ async def _with(ctx: Context) -> str:
     mods = key_value = None # key_value is acc when std, score when mania
 
     if mode_vn in (0, 1): # oppai-ng
-        if not glob.oppai_built:
-            return 'No oppai-ng binary was found at startup.'
-
         # +?<mods> <acc>%?
         if 1 < len(ctx.args) > 2:
             return 'Invalid syntax: !with <mods/acc> ...'
@@ -915,9 +912,6 @@ async def stealth(ctx: Context) -> str:
 @command(Privileges.Dangerous)
 async def recalc(ctx: Context) -> str:
     """Performs a full PP recalc on a specified map, or all maps."""
-    if not glob.oppai_built:
-        return 'No oppai-ng binary was found at startup.'
-
     if len(ctx.args) != 1 or ctx.args[0] not in ('map', 'all'):
         return 'Invalid syntax: !recalc <map/all>'
 
@@ -957,10 +951,11 @@ async def recalc(ctx: Context) -> str:
                 continue
 
             for score in scores:
-                ppcalc.mods = Mods(score['mods'])
-                ppcalc.combo = score['max_combo']
-                ppcalc.nmiss = score['nmiss']
-                ppcalc.acc = score['acc']
+                # TODO: speedtest vs 1bang
+                ppcalc.pp_attrs['mods'] = Mods(score['mods'])
+                ppcalc.pp_attrs['combo'] = score['max_combo']
+                ppcalc.pp_attrs['nmiss'] = score['nmiss']
+                ppcalc.pp_attrs['acc'] = score['acc']
 
                 pp, _ = await ppcalc.perform() # sr not needed
 
@@ -1169,8 +1164,8 @@ if glob.config.advanced:
         try: # def __py(ctx)
             exec(definition, __py_namespace)  # add to namespace
             ret = await __py_namespace['__py'](ctx) # await it's return
-        except Exception as e: # return exception in osu! chat
-            ret = f'{e.__class__}: {e}'
+        except Exception as exc: # return exception in osu! chat
+            ret = f'{exc.__class__}: {exc}'
 
         if '__py' in __py_namespace:
             del __py_namespace['__py']
@@ -1258,7 +1253,12 @@ async def mp_map(ctx: Context) -> str:
     if len(ctx.args) != 1 or not ctx.args[0].isdecimal():
         return 'Invalid syntax: !mp map <beatmapid>'
 
-    if not (bmap := await Beatmap.from_bid(int(ctx.args[0]))):
+    map_id = int(ctx.args[0])
+
+    if map_id == ctx.match.map_id:
+        return 'Map already selected.'
+
+    if not (bmap := await Beatmap.from_bid(map_id)):
         return 'Beatmap not found.'
 
     ctx.match.map_id = bmap.id
@@ -1362,8 +1362,7 @@ async def mp_invite(ctx: Context) -> str:
     if not (t := glob.players.get(name=ctx.args[0])):
         return 'Could not find a user by that name.'
     elif t is glob.bot:
-        ctx.player.send_bot("I'm too busy!")
-        return
+        return "I'm too busy!"
 
     if ctx.player is t:
         return "You can't invite yourself!"
@@ -2168,13 +2167,17 @@ async def process_commands(p: Player, t: Messageable,
         commands = regular_commands
 
     for cmd in commands:
-        if trigger in cmd.triggers and p.priv & cmd.priv == cmd.priv:
-            ctx = Context(**{
-                'player': p,
-                'trigger': trigger,
-                'args': args,
-                'match' if isinstance(t, Match) else 'recipient': t
-            })
+        if (
+            trigger in cmd.triggers and
+            p.priv & cmd.priv == cmd.priv
+        ):
+            # found matching trigger with sufficient privs
+            ctx = Context(player=p, trigger=trigger, args=args)
+
+            if isinstance(t, Match):
+                ctx.match = t
+            else:
+                ctx.recipient = t
 
             # command found & we have privileges, run it.
             if res := await cmd.callback(ctx):
