@@ -13,6 +13,7 @@ import struct
 import time
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version as pkg_version
 from time import perf_counter_ns as clock_ns
@@ -64,7 +65,8 @@ class Command(NamedTuple):
     hidden: bool
     doc: str
 
-class Context(NamedTuple):
+@dataclass
+class Context:
     player: Player
     trigger: str
     args: Sequence[str]
@@ -170,6 +172,49 @@ async def roll(ctx: Context) -> str:
 
     points = random.randrange(0, max_roll)
     return f'{ctx.player.name} rolls {points} points!'
+
+@command(Privileges.Normal, hidden=True)
+async def block(ctx: Context) -> str:
+    """Block another user from communicating with you."""
+    target = await glob.players.get_ensure(name=' '.join(ctx.args))
+
+    if not target:
+        return 'User not found.'
+
+    if (
+        target is glob.bot or
+        target is ctx.player
+    ):
+        return 'What?'
+
+    if target.id in ctx.player.blocks:
+        return f'{target.name} already blocked!'
+
+    if target.id in ctx.player.friends:
+        ctx.player.friends.remove(target.id)
+
+    await ctx.player.add_block(target)
+    return f'Added {target.name} to blocked users.'
+
+@command(Privileges.Normal, hidden=True)
+async def unblock(ctx: Context) -> str:
+    """Unblock another user from communicating with you."""
+    target = await glob.players.get_ensure(name=' '.join(ctx.args))
+
+    if not target:
+        return 'User not found.'
+
+    if (
+        target is glob.bot or
+        target is ctx.player
+    ):
+        return 'What?'
+
+    if target.id not in ctx.player.blocks:
+        return f'{target.name} not blocked!'
+
+    await ctx.player.remove_block(target)
+    return f'Removed {target.name} from blocked users.'
 
 @command(Privileges.Normal)
 async def reconnect(ctx: Context) -> str:
@@ -1361,10 +1406,11 @@ async def mp_invite(ctx: Context) -> str:
 
     if not (t := glob.players.get(name=ctx.args[0])):
         return 'Could not find a user by that name.'
-    elif t is glob.bot:
+
+    if t is glob.bot:
         return "I'm too busy!"
 
-    if ctx.player is t:
+    if t is ctx.player:
         return "You can't invite yourself!"
 
     t.enqueue(packets.matchInvite(ctx.player, t.name))

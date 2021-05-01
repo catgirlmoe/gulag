@@ -1901,7 +1901,6 @@ async def api_get_score_info(conn: Connection) -> Optional[bytes]:
     if not res:
         return (404, JSON({'status': 'Score not found.'}))
 
-
     return JSON({'status': 'success', 'score': res})
 
 @domain.route('/api/get_replay')
