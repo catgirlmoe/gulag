@@ -72,10 +72,14 @@ async def bancho_http_handler(conn: Connection) -> bytes:
 
 @domain.route('/', methods=['POST'])
 async def bancho_handler(conn: Connection) -> bytes:
+    ip = conn.headers['X-Real-IP']
+
     if (
         'User-Agent' not in conn.headers or
         conn.headers['User-Agent'] != 'osu!'
     ):
+        url = f'{conn.cmd} {conn.headers["Host"]}{conn.path}'
+        log(f'[{ip}] {url} missing user-agent.', Ansi.LRED)
         return
 
     # check for 'osu-token' in the headers.
@@ -85,9 +89,7 @@ async def bancho_handler(conn: Connection) -> bytes:
         # login is a bit of a special case,
         # so we'll handle it separately.
         async with glob.players._lock:
-            resp, token = await login(
-                conn.body, conn.headers['X-Real-IP']
-            )
+            resp, token = await login(conn.body, ip)
 
         conn.resp_headers['cho-token'] = token
         return resp
@@ -146,8 +148,8 @@ def register(restricted: Union[bool, Callable] = False) -> Callable:
         return cls
 
     if callable(restricted):
-        _cls, restricted = restricted, False
         # packet class passed right in
+        _cls, restricted = restricted, False
         return wrapper(_cls)
     return wrapper
 
@@ -197,7 +199,9 @@ class SendMessage(BanchoPacket, type=Packets.OSU_SEND_PUBLIC_MESSAGE):
         msg = self.msg.msg.strip()
         recipient = self.msg.recipient
 
-        if recipient == '#spectator':
+        if recipient == '#highlight':
+            return
+        elif recipient == '#spectator':
             if p.spectating:
                 # we are spectating someone
                 spec_id = p.spectating.id
@@ -333,7 +337,7 @@ RESTRICTED_MSG = (
     'greater than 3 months, you may appeal via the form on the site.'
 )
 
-async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
+async def login(body: bytes, ip: str) -> tuple[bytes, str]:
     """\
     Login has no specific packet, but happens when the osu!
     client sends a request without an 'osu-token' header.
@@ -360,7 +364,8 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
 
     """ Parse data and verify the request is legitimate. """
 
-    if len(split := origin.decode().split('\n')[:-1]) != 3:
+    if len(split := body.decode().split('\n')[:-1]) != 3:
+        log(f'Invalid login request from {ip}.', Ansi.LRED)
         return # invalid request
 
     username = split[0]
@@ -664,20 +669,32 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
 
         # the player may have been sent mail while offline,
         # enqueue any messages from their respective authors.
-        # (thanks osu for doing this by name rather than id very cool)
-        query = ('SELECT m.`msg`, m.`time`, m.`from_id`, '
-                '(SELECT name FROM users WHERE id = m.`from_id`) AS `from`, '
-                '(SELECT name FROM users WHERE id = m.`to_id`) AS `to` '
-                'FROM `mail` m WHERE m.`to_id` = %s AND m.`read` = 0')
+        res = await glob.db.fetchall(
+            'SELECT m.`msg`, m.`time`, m.`from_id`, '
+            '(SELECT name FROM users WHERE id = m.`from_id`) AS `from`, '
+            '(SELECT name FROM users WHERE id = m.`to_id`) AS `to` '
+            'FROM `mail` m WHERE m.`to_id` = %s AND m.`read` = 0',
+            [p.id]
+        )
 
-        for msg in await glob.db.fetchall(query, [p.id]):
-            msg_time = dt.fromtimestamp(msg['time'])
-            msg_ts = f'[{msg_time:%a %b %d @ %H:%M%p}] {msg["msg"]}'
+        if res:
+            sent_to = set() # ids
 
-            data += packets.sendMessage(
-                sender=msg['from'], msg=msg_ts,
-                recipient=msg['to'], sender_id=msg['from_id']
-            )
+            for msg in res:
+                if msg['from'] not in sent_to:
+                    packets.sendMessage(
+                        sender=msg['from'], msg='Unread messages',
+                        recipient=msg['to'], sender_id=msg['from_id']
+                    )
+                    sent_to.add(msg['from'])
+
+                msg_time = dt.fromtimestamp(msg['time'])
+                msg_ts = f'[{msg_time:%a %b %d @ %H:%M%p}] {msg["msg"]}'
+
+                data += packets.sendMessage(
+                    sender=msg['from'], msg=msg_ts,
+                    recipient=msg['to'], sender_id=msg['from_id']
+                )
 
         if not p.priv & Privileges.Verified:
             # this is the player's first login, verify their
@@ -728,8 +745,8 @@ async def login(origin: bytes, ip: str) -> tuple[bytes, str]:
 
     p._queue.clear() # TODO: this is pretty suboptimal
 
-    user_os = 'runningunderwine' if is_wine else 'win32'
-    log(f'{p} logged in [{osu_ver_str} | {user_os}].', Ansi.LCYAN)
+    user_os = 'unix (wine)' if is_wine else 'win32'
+    log(f'{p} logged in with {osu_ver_str} on {user_os}.', Ansi.LCYAN)
 
     await p.update_latest_activity()
     await sendLogin(p)
@@ -962,8 +979,9 @@ class LobbyJoin(BanchoPacket, type=Packets.OSU_JOIN_LOBBY):
     async def handle(self, p: Player) -> None:
         p.in_lobby = True
 
-        for m in [_m for _m in glob.matches if _m]:
-            p.enqueue(packets.newMatch(m))
+        for m in glob.matches:
+            if m is not None:
+                p.enqueue(packets.newMatch(m))
 
 @register
 class MatchCreate(BanchoPacket, type=Packets.OSU_CREATE_MATCH):
@@ -1414,6 +1432,9 @@ class ChannelJoin(BanchoPacket, type=Packets.OSU_CHANNEL_JOIN):
     name: osuTypes.string
 
     async def handle(self, p: Player) -> None:
+        if self.name == '#highlight':
+            return
+
         c = glob.channels[self.name]
 
         if not c or not p.join_channel(c):
@@ -1554,6 +1575,9 @@ class ChannelPart(BanchoPacket, type=Packets.OSU_CHANNEL_PART):
     name: osuTypes.string
 
     async def handle(self, p: Player) -> None:
+        if self.name == '#highlight':
+            return
+
         c = glob.channels[self.name]
 
         if not c:

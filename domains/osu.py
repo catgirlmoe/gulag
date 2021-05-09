@@ -25,7 +25,6 @@ from cmyui import Connection
 from cmyui import Domain
 from cmyui import log
 from cmyui import ratelimit
-from cmyui.discord import Webhook
 
 import packets
 import utils.misc
@@ -562,30 +561,19 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         stacktrace = utils.misc.get_appropriate_stacktrace()
         await utils.misc.log_strange_occurrence(stacktrace)
 
-    if not ( # check all players not whitelisted or restricted
-        score.player.priv & Privileges.Whitelisted or
-        score.player.restricted
+    if ( # check for pp caps on ranked & approved maps for appropriate players.
+        score.bmap.status != RankedStatus.Loved and not (
+            score.player.priv & Privileges.Whitelisted or
+            score.player.restricted
+        )
     ):
         # Get the PP cap for the current context.
         pp_cap = glob.config.autoban_pp[score.mode][score.mods & Mods.FLASHLIGHT != 0]
 
         if score.pp > pp_cap:
-            msg_content = (
-                f'{score.player} banned for submitting '
-                f'{score.pp:.2f}pp score on gm {score.mode!r}.',
-            )
-
-            if webhook_url := glob.config.webhooks['audit-log']:
-                # TODO: make it look nicer lol.. very basic
-                webhook = Webhook(url=webhook_url)
-                webhook.content = msg_content
-                await webhook.post(glob.http)
-
-            log(msg_content, Ansi.LRED)
-
             await score.player.restrict(
-                admin = glob.bot,
-                reason = f'[{score.mode!r}] autoban @ {score.pp:.2f}'
+                admin=glob.bot,
+                reason=f'[{score.mode!r} {score.mods!r}] autoban @ {score.pp:.2f}pp'
             )
 
     """ Score submission checks completed; submit the score. """
@@ -698,9 +686,8 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
     stats.playtime += score.time_elapsed // 1000
     stats.plays += 1
 
-    stats_query = [
-        'UPDATE stats SET ' # no , intentionally
-        'plays_{0:sql} = %s',
+    stats_query = [ # build a list of params to update
+        'UPDATE stats SET plays_{0:sql} = %s',
         'playtime_{0:sql} = %s'
     ]
     stats_params = [stats.plays, stats.playtime]
@@ -2162,8 +2149,19 @@ async def api_set_avatar(conn: Connection, p: 'Player') -> Optional[bytes]:
 
 """ Misc handlers """
 
-@domain.route(re.compile(r'^/ss/[a-zA-Z0-9]{8}\.(png|jpeg)$'))
+if glob.config.redirect_osu_urls:
+    # NOTE: this will likely be removed with the addition of a frontend.
+    @domain.route({re.compile(r'^/beatmapsets/\d{1,10}(?:/discussion)?/?$'),
+                   re.compile(r'^/beatmaps/\d{1,10}/?'),
+                   re.compile(r'^/community/forums/topics/\d{1,10}/?$')})
+    async def osu_redirects(conn: Connection) -> Optional[bytes]:
+        """Redirect some common url's the client uses to osu!."""
+        conn.resp_headers['Location'] = f'https://osu.ppy.sh{conn.path}'
+        return (301, b'')
+
+@domain.route(re.compile(r'^/ss/[a-zA-Z0-9-_]{8}\.(png|jpeg)$'))
 async def get_screenshot(conn: Connection) -> Optional[bytes]:
+    """Serve a screenshot from the server, by filename."""
     if len(conn.path) not in (16, 17):
         return (400, b'Invalid request.')
 
@@ -2192,6 +2190,7 @@ async def get_osz(conn: Connection) -> Optional[bytes]:
 
 @domain.route(re.compile(r'^/web/maps/'))
 async def get_updated_beatmap(conn: Connection) -> Optional[bytes]:
+    """Send the latest .osu file the server has for a given map."""
     if not (re := regexes.mapfile.match(unquote(conn.path[10:]))):
         log(f'Requested invalid map update {conn.path}.', Ansi.LRED)
         return (400, b'Invalid map file syntax.')

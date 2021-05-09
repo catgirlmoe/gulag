@@ -1027,8 +1027,8 @@ async def debug(ctx: Context) -> str:
     glob.app.debug = not glob.app.debug
     return f"Toggled {'on' if glob.app.debug else 'off'}."
 
-# TODO: this command is rly bad, it probably
-# shouldn't really be a command to begin with..
+# NOTE: these commands will likely be removed
+#       with the addition of a good frontend.
 str_priv_dict = {
     'normal': Privileges.Normal,
     'verified': Privileges.Verified,
@@ -1042,24 +1042,45 @@ str_priv_dict = {
     'admin': Privileges.Admin,
     'dangerous': Privileges.Dangerous
 }
+
 @command(Privileges.Dangerous, hidden=True)
-async def setpriv(ctx: Context) -> str:
+async def addpriv(ctx: Context) -> str:
     """Set privileges for a specified player (by name)."""
     if len(ctx.args) < 2:
-        return 'Invalid syntax: !setpriv <name> <role1 role2 role3 ...>'
+        return 'Invalid syntax: !addpriv <name> <role1 role2 role3 ...>'
 
-    priv = Privileges(0)
+    bits = Privileges(0)
 
     for m in [m.lower() for m in ctx.args[1:]]:
         if m not in str_priv_dict:
             return f'Not found: {m}.'
 
-        priv |= str_priv_dict[m]
+        bits |= str_priv_dict[m]
 
     if not (t := await glob.players.get_ensure(name=ctx.args[0])):
         return 'Could not find user.'
 
-    await t.update_privs(priv)
+    await t.add_privs(bits)
+    return f"Updated {t}'s privileges."
+
+@command(Privileges.Dangerous, hidden=True)
+async def rmpriv(ctx: Context) -> str:
+    """Set privileges for a specified player (by name)."""
+    if len(ctx.args) < 2:
+        return 'Invalid syntax: !rmpriv <name> <role1 role2 role3 ...>'
+
+    bits = Privileges(0)
+
+    for m in [m.lower() for m in ctx.args[1:]]:
+        if m not in str_priv_dict:
+            return f'Not found: {m}.'
+
+        bits |= str_priv_dict[m]
+
+    if not (t := await glob.players.get_ensure(name=ctx.args[0])):
+        return 'Could not find user.'
+
+    await t.remove_privs(bits)
     return f"Updated {t}'s privileges."
 
 @command(Privileges.Dangerous)
@@ -1248,33 +1269,83 @@ async def mp_help(ctx: Context) -> str:
 @mp_commands.add(Privileges.Normal, aliases=['st'])
 async def mp_start(ctx: Context) -> str:
     """Start the current multiplayer match, with any players ready."""
-    if (msg_len := len(ctx.args)) > 1:
+    if len(ctx.args) > 1:
         return 'Invalid syntax: !mp start <force/seconds>'
 
-    if msg_len == 1:
+    # this command can be used in a few different ways;
+    # !mp start: start the match now (make sure all players are ready)
+    # !mp start force: start the match now (don't check for ready)
+    # !mp start N: start the match in N seconds (don't check for ready)
+    # !mp start cancel: cancel the current match start timer
+
+    if not ctx.args:
+        # !mp start
+        if ctx.match.starting['start'] is not None:
+            time_remaining = int(ctx.match.starting['time'] - time.time())
+            return f'Match starting in {time_remaining} seconds.'
+
+        if any(s.status == SlotStatus.not_ready for s in ctx.match.slots):
+            return 'Not all players are ready (`!mp start force` to override).'
+    else:
         if ctx.args[0].isdecimal():
+            # !mp start N
+            if ctx.match.starting['start'] is not None:
+                time_remaining = int(ctx.match.starting['time'] - time.time())
+                return f'Match starting in {time_remaining} seconds.'
+
             # !mp start <seconds>
             duration = int(ctx.args[0])
             if not 0 < duration <= 300:
                 return 'Timer range is 1-300 seconds.'
 
-            def _start():
+            def _start() -> None:
+                """Remove any pending timers & start the match."""
+                # remove start & alert timers
+                ctx.match.starting['start'] = None
+                ctx.match.starting['alerts'] = None
+                ctx.match.starting['time'] = None
+
                 # make sure player didn't leave the
                 # match since queueing this start lol..
-                if ctx.player in ctx.match:
-                    ctx.match.start()
+                if ctx.player not in ctx.match:
+                    ctx.match.chat.send_bot('Player left match? (cancelled)')
+                    return
 
+                ctx.match.start()
+                ctx.match.chat.send_bot('Starting match.')
+
+            def _alert_start(t: int) -> None:
+                """Alert the match of the impending start."""
+                ctx.match.chat.send_bot(f'Match starting in {t} seconds.')
+
+            # add timers to our match object,
+            # so we can cancel them if needed.
             loop = asyncio.get_running_loop()
-            loop.call_later(duration, _start)
+            ctx.match.starting['start'] = loop.call_later(duration, _start)
+            ctx.match.starting['alerts'] = [
+                loop.call_later(duration - t, lambda t=t: _alert_start(t))
+                for t in (60, 30, 10, 5, 4, 3, 2, 1) if t < duration
+            ]
+            ctx.match.starting['time'] = time.time() + duration
+
             return f'Match will start in {duration} seconds.'
+        elif ctx.args[0] in ('cancel', 'c'):
+            # !mp start cancel
+            if ctx.match.starting['start'] is None:
+                return 'Match timer not active!'
+
+            ctx.match.starting['start'].cancel()
+            for alert in ctx.match.starting['alerts']:
+                alert.cancel()
+
+            ctx.match.starting['start'] = None
+            ctx.match.starting['alerts'] = None
+            ctx.match.starting['time'] = None
+
+            return 'Match timer cancelled.'
         elif ctx.args[0] not in ('force', 'f'):
             return 'Invalid syntax: !mp start <force/seconds>'
         # !mp start force simply passes through
-    else:
-        # !mp start (no force or timer)
-        if any(s.status == SlotStatus.not_ready for s in ctx.match.slots):
-            return ('Not all players are ready '
-                    '(use `!mp start force` to override).')
 
     ctx.match.start()
     return 'Good luck!'
@@ -1432,7 +1503,7 @@ async def mp_addref(ctx: Context) -> str:
         return f'{t} is already a match referee!'
 
     ctx.match._refs.add(t)
-    return 'Match referees updated.'
+    return f'{t.name} added to match referees.'
 
 @mp_commands.add(Privileges.Normal)
 async def mp_rmref(ctx: Context) -> str:
@@ -1450,7 +1521,7 @@ async def mp_rmref(ctx: Context) -> str:
         return 'The host is always a referee!'
 
     ctx.match._refs.remove(t)
-    return 'Match referees updated.'
+    return f'{t.name} removed from match referees.'
 
 @mp_commands.add(Privileges.Normal)
 async def mp_listref(ctx: Context) -> str:

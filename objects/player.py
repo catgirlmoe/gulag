@@ -14,8 +14,9 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
-from cmyui import Ansi
-from cmyui import log
+from cmyui.logging import Ansi
+from cmyui.logging import log
+from cmyui.discord import Webhook
 
 import packets
 from constants.countries import country_codes
@@ -291,7 +292,7 @@ class Player:
         return self.remaining_silence != 0
 
     @cached_property
-    def bancho_priv(self) -> int:
+    def bancho_priv(self) -> ClientPrivileges:
         """The player's privileges according to the client."""
         ret = ClientPrivileges(0)
         if self.priv & Privileges.Normal:
@@ -429,15 +430,21 @@ class Player:
             [admin.id, self.id, log_msg]
         )
 
+        if 'restricted' in self.__dict__:
+            del self.restricted # wipe cached_property
+
+        log_msg = f'{admin} restricted {self} for: {reason}.'
+
+        log(log_msg, Ansi.LRED)
+
+        if webhook_url := glob.config.webhooks['audit-log']:
+            webhook = Webhook(webhook_url, content=log_msg)
+            await webhook.post(glob.http)
+
         if self.online:
             # log the user out if they're offline, this
             # will simply relog them and refresh their state.
             self.logout()
-
-        if 'restricted' in self.__dict__:
-            del self.restricted # wipe cached_property
-
-        log(f'Restrict {self}.', Ansi.LCYAN)
 
     async def unrestrict(self, admin: 'Player', reason: str) -> None:
         """Restrict `self` for `reason`, and log to sql."""
@@ -451,15 +458,21 @@ class Player:
             [admin.id, self.id, log_msg]
         )
 
+        if 'restricted' in self.__dict__:
+            del self.restricted # wipe cached_property
+
+        log_msg = f'{admin} unrestricted {self} for: {reason}.'
+
+        log(log_msg, Ansi.LRED)
+
+        if webhook_url := glob.config.webhooks['audit-log']:
+            webhook = Webhook(webhook_url, content=log_msg)
+            await webhook.post(glob.http)
+
         if self.online:
             # log the user out if they're offline, this
             # will simply relog them and refresh their state.
             self.logout()
-
-        if 'restricted' in self.__dict__:
-            del self.restricted # wipe cached_property
-
-        log(f'Unrestricted {self}.', Ansi.LCYAN)
 
     async def silence(self, admin: 'Player', duration: int,
                       reason: str) -> None:
@@ -584,6 +597,18 @@ class Player:
             # multi is now empty, chat has been removed.
             # remove the multi from the channels list.
             log(f'Match {self.match} finished.')
+
+            # cancel any pending start timers
+            if self.match.starting['start'] is not None:
+                self.match.starting['start'].cancel()
+                for alert in self.match.starting['alerts']:
+                    alert.cancel()
+
+                # i guess unnecessary but i'm ocd
+                self.match.starting['start'] = None
+                self.match.starting['alerts'] = None
+                self.match.starting['time'] = None
+
             glob.matches.remove(self.match)
 
             if lobby := glob.channels['#lobby']:
@@ -597,6 +622,10 @@ class Player:
                         self.match.host = s.player
                         self.match.host.enqueue(packets.matchTransferHost())
                         break
+
+            if self in self.match._refs:
+                self.match._refs.remove(self)
+                self.match.chat.send_bot(f'{self.name} removed from match referees.')
 
             # notify others of our deprature
             self.match.enqueue_state()
