@@ -11,6 +11,7 @@ from objects.match import Match
 from objects.match import Slot
 
 WEBHOOK = glob.config.webhooks['chat-bridge']
+SCORE_HOOK = glob.config.webhooks['score-log']
 
 GRADE_EMOTES = {
   "XH": "<:grade_xh:833673474836660265>",
@@ -75,7 +76,7 @@ MOD_EMOTES = {
 
 async def sendSubmitScore(s: Score):
   if not s.player.match:
-    wh = Webhook(url=WEBHOOK)
+    wh = Webhook(url=SCORE_HOOK)
 
     diff=[f'{s.sr:.2f}★']
     if s.mods:
