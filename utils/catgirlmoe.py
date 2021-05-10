@@ -74,6 +74,13 @@ MOD_EMOTES = {
   'CO': "CO",
 }
 
+MODE_EMOTES = {
+  'std': "<:std:835465330204606495>",
+  'taiko': "<:taiko:835465330318508053>",
+  'catch': "<:catch:835465328645242931>",
+  'mania': "<:mania:835465327948333057>",
+}
+
 def sanitize(m: str):
   return m.replace("@", "[@]")
 
