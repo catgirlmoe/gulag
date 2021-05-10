@@ -10,7 +10,7 @@ from objects.beatmap import Beatmap
 from objects.match import Match
 from objects.match import Slot
 
-WEBHOOK = glob.config.webhooks['chat-bridge']
+CHAT_HOOK = glob.config.webhooks['chat-bridge']
 SCORE_HOOK = glob.config.webhooks['score-log']
 
 GRADE_EMOTES = {
@@ -74,6 +74,9 @@ MOD_EMOTES = {
   'CO': "CO",
 }
 
+def sanitize(m: str):
+  return m.replace("@", "[@]")
+
 async def sendSubmitScore(s: Score):
   if not s.player.match:
     wh = Webhook(url=SCORE_HOOK)
@@ -93,35 +96,15 @@ async def sendSubmitScore(s: Score):
     await wh.post(glob.http)
 
 async def sendLogin(p: Player):
-  wh = Webhook(url=WEBHOOK)
-
-  s = p.stats[0]  
-
-  e = Embed(color=0x8BC34A)
-  e.set_author(name=f'{p.name} joined the server', url=f'https://osu.catgirl.moe/u/{p.id}', icon_url=f'https://a.osu.catgirl.moe/{p.id}')
-  e.add_field("Rank:", f'#{s.rank} ({s.pp:,.0f}pp)', True)
-  e.add_field("Accuracy:", f'{s.acc:.2f}% ({s.max_combo:,}x)', True)
-  e.add_field("Score:", f'{s.tscore:,} ({float(s.playtime)/3600:.2f}h)', True)
-  
-  wh.add_embed(e)
+  wh = Webhook(url=CHAT_HOOK, content=f'📥 **{sanitize(p.name)}** has joined the game.')
   await wh.post(glob.http)
 
 async def sendLogout(p: Player):
-  wh = Webhook(url=WEBHOOK)
-
-  s = p.stats[0] 
-
-  e = Embed(color=0xF44336)
-  e.set_author(name=f'{p.name} left the server', url=f'https://osu.catgirl.moe/u/{p.id}', icon_url=f'https://a.osu.catgirl.moe/{p.id}')
-  e.add_field("Rank:", f'#{s.rank} ({s.pp:,.0f}pp)', True)
-  e.add_field("Accuracy:", f'{s.acc:.2f}% ({s.max_combo:,}x)', True)
-  e.add_field("Score:", f'{s.tscore:,} ({float(s.playtime)/3600:.2f}h)', True)
-  
-  wh.add_embed(e)
+  wh = Webhook(url=CHAT_HOOK, content=f'📤 **{sanitize(p.name)}** has left the game.')
   await wh.post(glob.http)
 
 async def sendRankMap(p: Player, b: Beatmap, s: str):
-  wh = Webhook(url=WEBHOOK)
+  wh = Webhook(url=CHAT_HOOK)
 
   e = Embed(title=b.full, url=f'https://osu.ppy.sh/b/{b.id}', color=0xE91E63)
   e.set_author(name=f'{p.name} {s} a map', url=f'https://osu.catgirl.moe/u/{p.id}', icon_url=f'https://a.osu.catgirl.moe/{p.id}')
@@ -131,34 +114,19 @@ async def sendRankMap(p: Player, b: Beatmap, s: str):
   await wh.post(glob.http)
 
 async def sendSendMessage(p: Player, m: str):
-  wh = Webhook(url=WEBHOOK, username=p.name, avatar_url=f'https://a.osu.catgirl.moe/{p.id}', content=m.replace("@", "[@]"))
+  wh = Webhook(url=CHAT_HOOK, username=p.name, avatar_url=f'https://a.osu.catgirl.moe/{p.id}', content=sanitize(m))
   await wh.post(glob.http)
 
 async def sendMatchCreate(p: Player, m: Match):
-  wh = Webhook(url=WEBHOOK)
-
-  e = Embed(color=0x8BC34A)
-  e.set_author(name=f'{p.name} created \"{m.name}\"', url=f'https://osu.catgirl.moe/u/{p.id}', icon_url=f'https://a.osu.catgirl.moe/{p.id}')
-  
-  wh.add_embed(e)
+  wh = Webhook(url=CHAT_HOOK, content=f'⭐ **{sanitize(p.name)}** created  lobby *\"{sanitize(m.name)}\"*.')
   await wh.post(glob.http)
 
 async def sendMatchJoin(p: Player, m: Match):
-  wh = Webhook(url=WEBHOOK)
-
-  e = Embed(color=0x8BC34A)
-  e.set_author(name=f'{p.name} joined \"{m.name}\"', url=f'https://osu.catgirl.moe/u/{p.id}', icon_url=f'https://a.osu.catgirl.moe/{p.id}')
-  
-  wh.add_embed(e)
+  wh = Webhook(url=CHAT_HOOK, content=f'➡️ **{sanitize(p.name)}** joined lobby *\"{sanitize(m.name)}\"*.')
   await wh.post(glob.http)
 
 async def sendMatchPart(p: Player, m: Match):
-  wh = Webhook(url=WEBHOOK)
-
-  e = Embed(color=0xF44336)
-  e.set_author(name=f'{p.name} left \"{m.name}\"', url=f'https://osu.catgirl.moe/u/{p.id}', icon_url=f'https://a.osu.catgirl.moe/{p.id}')
-  
-  wh.add_embed(e)
+  wh = Webhook(url=WEBHOOK, content=f'⬅️ **{sanitize(p.name)}** left lobby *\"{sanitize(m.name)}\"*.')
   await wh.post(glob.http)
 
 async def sendMatchComplete(slots: list[Slot], m: Match):
@@ -170,7 +138,7 @@ async def sendMatchComplete(slots: list[Slot], m: Match):
     player_accuracy = []
     player_scores = []
 
-    wh = Webhook(url=WEBHOOK)
+    wh = Webhook(url=CHAT_HOOK)
 
     bmap = next(iter(submitted)).recent_score.bmap
 
