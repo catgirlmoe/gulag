@@ -85,22 +85,21 @@ def sanitize(m: str):
   return m.replace("@", "[@]")
 
 async def sendSubmitScore(s: Score):
-  if not s.player.match:
-    wh = Webhook(url=SCORE_HOOK)
+  wh = Webhook(url=SCORE_HOOK)
 
-    diff=[f'{s.sr:.2f}★']
-    if s.mods:
-      diff.insert(1, f'({"".join(map(lambda mod: MOD_EMOTES[mod], re.findall("..",repr(s.mods).replace("DTNC","NC"))))})')
+  diff=[f'{s.sr:.2f}★']
+  if s.mods:
+    diff.insert(1, f'({"".join(map(lambda mod: MOD_EMOTES[mod], re.findall("..",repr(s.mods).replace("DTNC","NC"))))})')
 
-    e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{s.bmap.id}',color=GRADE_COLORS[s.grade])
-    e.set_author(name=f'{s.player.name} achieved #{s.rank} on', url=f'https://osu.catgirl.moe/u/{s.player.id}', icon_url=f'https://a.osu.catgirl.moe/{s.player.id}')
-    e.add_field("Difficulty:", ' '.join(diff), True)
-    e.add_field("Accuracy:", f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)', True)
-    e.add_field("Score:", f'{s.score:,} ({s.max_combo:,}/{s.bmap.max_combo:,}x)', True)
-    e.set_image(url=f'https://assets.ppy.sh/beatmaps/{s.bmap.set_id}/covers/cover.jpg')
+  e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{s.bmap.id}',color=GRADE_COLORS[s.grade])
+  e.set_author(name=f'{s.player.name} achieved #{s.rank} on', url=f'https://osu.catgirl.moe/u/{s.player.id}', icon_url=f'https://a.osu.catgirl.moe/{s.player.id}')
+  e.add_field("Difficulty:", ' '.join(diff), True)
+  e.add_field("Accuracy:", f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)', True)
+  e.add_field("Score:", f'{s.score:,} ({s.max_combo:,}/{s.bmap.max_combo:,}x)', True)
+  e.set_image(url=f'https://assets.ppy.sh/beatmaps/{s.bmap.set_id}/covers/cover.jpg')
 
-    wh.add_embed(e)
-    await wh.post(glob.http)
+  wh.add_embed(e)
+  await wh.post(glob.http)
 
 async def sendLogin(p: Player):
   wh = Webhook(url=CHAT_HOOK, content=f'📥 **{sanitize(p.name)}** has joined the game.')
@@ -125,19 +124,19 @@ async def sendSendMessage(p: Player, m: str):
   await wh.post(glob.http)
 
 async def sendMatchCreate(p: Player, m: Match):
-  wh = Webhook(url=CHAT_HOOK, content=f'⭐ **{sanitize(p.name)}** created  lobby *\"{sanitize(m.name)}\"*.')
+  wh = Webhook(url=CHAT_HOOK, content=f'⭐ **{sanitize(p.name)}** created  lobby *"{sanitize(m.name)}"*.')
   await wh.post(glob.http)
 
 async def sendMatchJoin(p: Player, m: Match):
-  wh = Webhook(url=CHAT_HOOK, content=f'➡️ **{sanitize(p.name)}** joined lobby *\"{sanitize(m.name)}\"*.')
+  wh = Webhook(url=CHAT_HOOK, content=f'➡️ **{sanitize(p.name)}** joined lobby *"{sanitize(m.name)}"*.')
   await wh.post(glob.http)
 
 async def sendMatchPart(p: Player, m: Match):
-  wh = Webhook(url=WEBHOOK, content=f'⬅️ **{sanitize(p.name)}** left lobby *\"{sanitize(m.name)}\"*.')
+  wh = Webhook(url=WEBHOOK, content=f'⬅️ **{sanitize(p.name)}** left lobby *"{sanitize(m.name)}"*.')
   await wh.post(glob.http)
 
 async def sendMatchComplete(slots: list[Slot], m: Match):
-  submitted, not_submitted = await m.await_submissions(slots) # Wait untill we receive all scores from the players
+  submitted, not_submitted = await m.await_submissions(slots)
   print(submitted)
   print(not_submitted)
   if submitted:
@@ -156,7 +155,7 @@ async def sendMatchComplete(slots: list[Slot], m: Match):
       player_accuracy.append(f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)')
       player_scores.append(f'{s.score:,} ({s.max_combo:,}/{s.bmap.max_combo:,}x)')
 
-    e.set_author(name=f'People in lobby "{m.name}" finished a map')
+    e.set_author(name=f'Lobby "{sanitize(m.name)}" finished a map')
     e.add_field("Players:", '\n'.join(player_names), True)
     e.add_field("Accuracy:", '\n'.join(player_accuracy), True)
     e.add_field("Score:", '\n'.join(player_scores), True)
