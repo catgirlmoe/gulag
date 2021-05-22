@@ -132,7 +132,7 @@ async def sendMatchJoin(p: Player, m: Match):
   await wh.post(glob.http)
 
 async def sendMatchPart(p: Player, m: Match):
-  wh = Webhook(url=WEBHOOK, content=f'⬅️ **{sanitize(p.name)}** left lobby *"{sanitize(m.name)}"*.')
+  wh = Webhook(url=CHAT_HOOK, content=f'⬅️ **{sanitize(p.name)}** left lobby *"{sanitize(m.name)}"*.')
   await wh.post(glob.http)
 
 async def sendMatchComplete(slots: list[Slot], m: Match):
