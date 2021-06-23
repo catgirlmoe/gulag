@@ -9,8 +9,9 @@ from typing import Optional
 from typing import Sequence
 from typing import Union
 
-from cmyui import log
-from cmyui import Ansi
+import aiomysql
+from cmyui.logging import Ansi
+from cmyui.logging import log
 
 from constants.privileges import Privileges
 from objects import glob
@@ -82,34 +83,35 @@ class Channels(list):
             log(f'{c} removed from channels list.')
 
     @classmethod
-    async def prepare(cls) -> 'Channels':
+    async def prepare(cls, db_cursor: aiomysql.DictCursor) -> 'Channels':
         """Fetch data from sql & return; preparing to run the server."""
-        log('Fetching channels from sql', Ansi.LCYAN)
-        return cls(
+        log('Fetching channels from sql.', Ansi.LCYAN)
+        await db_cursor.execute('SELECT * FROM channels')
+        return cls([
             Channel(
                 name = row['name'],
                 topic = row['topic'],
                 read_priv = Privileges(row['read_priv']),
                 write_priv = Privileges(row['write_priv']),
                 auto_join = row['auto_join'] == 1
-            ) for row in await glob.db.fetchall('SELECT * FROM channels')
-        )
+            ) async for row in db_cursor
+        ])
 
 class Matches(list):
     """The currently active multiplayer matches on the server."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.extend([None] * 64)
+        self.extend([None] * glob.config.max_multi_matches)
 
     def __iter__(self) -> Iterator['Match']:
         return super().__iter__()
 
     def __repr__(self) -> str:
-        return f'[{", ".join(m.name for m in self if m)}]'
+        return f'[{", ".join([m.name for m in self if m])}]'
 
     def get_free(self) -> Optional[int]:
-        """Return the first free slot id from `self`."""
+        """Return the first free match id from `self`."""
         for idx, m in enumerate(self):
             if m is None:
                 return idx
@@ -117,7 +119,7 @@ class Matches(list):
     def append(self, m: 'Match') -> bool:
         """Append `m` to the list."""
         if (free := self.get_free()) is not None:
-            # set the id of the match to the free slot.
+            # set the id of the match to the lowest available free.
             m.id = free
             self[free] = m
 
@@ -188,7 +190,7 @@ class Players(list):
                 p.enqueue(data)
 
     @staticmethod
-    def _parse_attr(kwargs: dict[str, object]) -> Optional[tuple[str, object]]:
+    def _parse_attr(kwargs: dict[str, object]) -> tuple[str, object]:
         """Get first matched attr & val from input kwargs. Used in get() methods."""
         for attr in ('token', 'id', 'name'):
             if (val := kwargs.pop(attr, None)) is not None:
@@ -264,9 +266,6 @@ class Players(list):
 
         super().append(p)
 
-        if glob.app.debug:
-            log(f'{p} added to global player list.')
-
     def remove(self, p: Player) -> None:
         """Remove `p` from the list."""
         if p not in self:
@@ -275,9 +274,6 @@ class Players(list):
             return
 
         super().remove(p)
-
-        if glob.app.debug:
-            log(f'{p} removed from global player list.')
 
 class MapPools(list):
     """The currently active mappools on the server."""
@@ -321,17 +317,23 @@ class MapPools(list):
             log(f'{mp} removed from mappools list.')
 
     @classmethod
-    async def prepare(cls) -> 'MapPools':
+    async def prepare(cls, db_cursor: aiomysql.DictCursor) -> 'MapPools':
         """Fetch data from sql & return; preparing to run the server."""
-        log('Fetching mappools from sql', Ansi.LCYAN)
-        return cls([
+        log('Fetching mappools from sql.', Ansi.LCYAN)
+        await db_cursor.execute('SELECT * FROM tourney_pools')
+        obj = cls([
             MapPool(
                 id = row['id'],
                 name = row['name'],
                 created_at = row['created_at'],
                 created_by = await glob.players.get_ensure(id=row['created_by'])
-            ) for row in await glob.db.fetchall('SELECT * FROM tourney_pools')
+            ) async for row in db_cursor
         ])
+
+        for pool in obj:
+            await pool.maps_from_sql(db_cursor)
+
+        return obj
 
 class Clans(list):
     """The currently active clans on the server."""
@@ -381,13 +383,13 @@ class Clans(list):
             log(f'{c} removed from clans list.')
 
     @classmethod
-    async def prepare(cls) -> 'Clans':
+    async def prepare(cls, db_cursor: aiomysql.DictCursor) -> 'Clans':
         """Fetch data from sql & return; preparing to run the server."""
-        log('Fetching clans from sql', Ansi.LCYAN)
-        res = await glob.db.fetchall('SELECT * FROM clans')
-        obj = cls([Clan(**row) for row in res])
+        log('Fetching clans from sql.', Ansi.LCYAN)
+        await db_cursor.execute('SELECT * FROM clans')
+        obj = cls([Clan(**row) async for row in db_cursor])
 
         for clan in obj:
-            await clan.members_from_sql()
+            await clan.members_from_sql(db_cursor)
 
         return obj

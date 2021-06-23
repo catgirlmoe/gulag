@@ -3,8 +3,8 @@
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime as dt
-from datetime import timedelta as td
+from datetime import datetime as datetime
+from datetime import timedelta as timedelta
 from enum import IntEnum
 from enum import unique
 from typing import Optional
@@ -12,7 +12,9 @@ from typing import Sequence
 from typing import TYPE_CHECKING
 from typing import Union
 
-from cmyui import log, Ansi
+import aiomysql
+from cmyui.logging import Ansi
+from cmyui.logging import log
 
 import packets
 from constants import regexes
@@ -46,14 +48,14 @@ BASE_DOMAIN = glob.config.domain
 @unique
 @pymysql_encode(escape_enum)
 class SlotStatus(IntEnum):
-    open       = 1
-    locked     = 2
-    not_ready  = 4
-    ready      = 8
-    no_map     = 16
-    playing    = 32
-    complete   = 64
-    quit       = 128
+    open      = 1
+    locked    = 2
+    not_ready = 4
+    ready     = 8
+    no_map    = 16
+    playing   = 32
+    complete  = 64
+    quit      = 128
 
     has_player = not_ready | ready | no_map | playing | complete
 
@@ -116,7 +118,7 @@ class MapPool:
     __slots__ = ('id', 'name', 'created_at', 'created_by', 'maps')
 
     def __init__(self, id: int, name: str,
-                 created_at: dt, created_by: 'Player') -> None:
+                 created_at: datetime, created_by: 'Player') -> None:
         self.id = id
         self.name = name
         self.created_at = created_at
@@ -127,13 +129,16 @@ class MapPool:
     def __repr__(self) -> str:
         return f'<{self.name}>'
 
-    async def maps_from_sql(self) -> None:
+    async def maps_from_sql(self, db_cursor: aiomysql.DictCursor) -> None:
         """Retrieve all maps from sql to populate `self.maps`."""
-        query = ('SELECT map_id, mods, slot '
-                 'FROM tourney_pool_maps '
-                 'WHERE pool_id = %s')
+        await db_cursor.execute(
+            'SELECT map_id, mods, slot '
+            'FROM tourney_pool_maps '
+            'WHERE pool_id = %s',
+            [self.id]
+        )
 
-        for row in await glob.db.fetchall(query, [self.id]):
+        async for row in db_cursor:
             map_id = row['map_id']
             bmap = await Beatmap.from_bid(map_id)
 
@@ -145,7 +150,7 @@ class MapPool:
                 # TODO: perhaps discord webhook?
                 log(f'Removing {map_id} from pool {self.name} (not found).', Ansi.LRED)
 
-                await glob.db.execute(
+                await db_cursor.execute(
                     'DELETE FROM tourney_pool_maps '
                     'WHERE map_id = %s',
                     [map_id]
@@ -171,15 +176,15 @@ class Slot:
     def empty(self) -> bool:
         return self.player is None
 
-    def copy_from(self, s) -> None:
-        self.player = s.player
-        self.status = s.status
-        self.team = s.team
-        self.mods = s.mods
+    def copy_from(self, other: 'Slot') -> None:
+        self.player = other.player
+        self.status = other.status
+        self.team = other.team
+        self.mods = other.mods
 
-    def reset(self) -> None:
+    def reset(self, new_status: SlotStatus = SlotStatus.open) -> None:
         self.player = None
-        self.status = SlotStatus.open
+        self.status = new_status
         self.team = MatchTeams.neutral
         self.mods = Mods.NOMOD
         self.loaded = False
@@ -281,7 +286,7 @@ class Match:
     @property
     def map_url(self):
         """The osu! beatmap url for `self`'s map."""
-        return f'https://{BASE_DOMAIN}/b/{self.map_id}'
+        return f'https://osu.{BASE_DOMAIN}/beatmaps/{self.map_id}'
 
     @property
     def embed(self) -> str:
@@ -416,8 +421,8 @@ class Match:
             # scores until they've all been submitted.
             while True:
                 rc_score = s.player.recent_score
-                max_age = dt.now() - td(seconds=bmap.total_length +
-                                                time_waited + 0.5)
+                max_age = datetime.now() - timedelta(seconds=bmap.total_length +
+                                                     time_waited + 0.5)
 
                 if (
                     rc_score and
@@ -523,10 +528,10 @@ class Match:
                 del m
 
             else: # teams
-                if rgx := regexes.tourney_matchname.match(self.name):
-                    match_name = rgx['name']
-                    team_names = {MatchTeams.blue: rgx['T1'],
-                                MatchTeams.red: rgx['T2']}
+                if r_match := regexes.tourney_matchname.match(self.name):
+                    match_name = r_match['name']
+                    team_names = {MatchTeams.blue: r_match['T1'],
+                                MatchTeams.red: r_match['T2']}
                 else:
                     match_name = self.name
                     team_names = {MatchTeams.blue: 'Blue',

@@ -17,14 +17,16 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
+import aiomysql
 import bcrypt
 import orjson
-from cmyui import _isdecimal
-from cmyui import Ansi
-from cmyui import Connection
-from cmyui import Domain
-from cmyui import log
-from cmyui import ratelimit
+from cmyui.logging import Ansi
+from cmyui.logging import log
+from cmyui.logging import printc
+from cmyui.utils import _isdecimal
+from cmyui.web import Connection
+from cmyui.web import Domain
+from cmyui.web import ratelimit
 
 import packets
 import utils.misc
@@ -59,7 +61,7 @@ AVATARS_PATH = Path.cwd() / '.data/avatars'
 
 """ Some helper decorators (used for /web/ connections) """
 
-def _required_args(args: set[str], argset: str) -> Callable:
+def _required_args(req_args: set[str], argset: str) -> Callable:
     """Decorator to ensure all required arguments are present."""
     # NOTE: this function is not meant to be used directly, but
     # rather used in the form as the functions below.
@@ -69,8 +71,9 @@ def _required_args(args: set[str], argset: str) -> Callable:
         # all arguments are sent in the request.
         @wraps(f)
         async def handler(conn: Connection) -> Optional[bytes]:
-            _argset = getattr(conn, argset)
-            if all([x in _argset for x in args]):
+            args = getattr(conn, argset)
+
+            if args.keys() >= req_args:
                 # all args given, call the
                 # handler with the conn.
                 return await f(conn)
@@ -80,12 +83,12 @@ def _required_args(args: set[str], argset: str) -> Callable:
 
 # the decorator above may be used
 # for either args, mpargs, or files.
-def required_args(args: set[str]) -> Callable:
-    return _required_args(args, argset='args')
-def required_mpargs(args: set[str]) -> Callable:
-    return _required_args(args, argset='multipart_args')
-def required_files(args: set[str]) -> Callable:
-    return _required_args(args, argset='files')
+def required_args(req_args: set[str]) -> Callable:
+    return _required_args(req_args, argset='args')
+def required_mpargs(req_args: set[str]) -> Callable:
+    return _required_args(req_args, argset='multipart_args')
+def required_files(req_args: set[str]) -> Callable:
+    return _required_args(req_args, argset='files')
 
 def get_login(name_p: str, pass_p: str, auth_error: bytes = b'') -> Callable:
     """Decorator to ensure a player's login information is correct."""
@@ -116,15 +119,50 @@ def get_login(name_p: str, pass_p: str, auth_error: bytes = b'') -> Callable:
         return handler
     return wrapper
 
+def acquire_db_conn(cursor_cls = aiomysql.Cursor) -> Callable:
+    """Decorator to acquire a single database
+       connection & cursor for a handler."""
+    def wrapper(f: Callable) -> Callable:
+        @wraps(f)
+        async def handler(*args) -> Optional[bytes]:
+            async with glob.db.pool.acquire() as conn:
+                async with conn.cursor(cursor_cls) as db_cursor:
+                    return await f(*args, db_cursor)
+        return handler
+    return wrapper
+
 """ /web/ handlers """
 
 # TODO
-# POST /web/osu-error.php
 # POST /web/osu-session.php
 # POST /web/osu-osz2-bmsubmit-post.php
 # POST /web/osu-osz2-bmsubmit-upload.php
 # GET /web/osu-osz2-bmsubmit-getid.php
 # GET /web/osu-get-beatmap-topic.php
+
+@domain.route('/web/osu-error.php', methods=['POST'])
+async def osuError(conn: Connection) -> Optional[bytes]:
+    if glob.app.debug:
+        err_args = conn.multipart_args
+        if 'u' in err_args and 'p' in err_args:
+            if not (
+                p := await glob.players.get_login(
+                    name = unquote(err_args['u']),
+                    pw_md5 = err_args['p']
+                )
+            ):
+                # player login incorrect
+                await utils.misc.log_strange_occurrence('osu-error auth failed')
+                p = None
+        else:
+            p = None
+
+        err_desc = '{feedback} ({exception})'.format(**err_args)
+        log(f'{p or "Offline user"} sent osu-error: {err_desc}', Ansi.LCYAN)
+        printc(err_args['stacktrace'][:-2], Ansi.LMAGENTA)
+
+    # TODO: save error in db
+    pass
 
 @domain.route('/web/osu-screenshot.php', methods=['POST'])
 @required_mpargs({'u', 'p', 'v'})
@@ -140,10 +178,23 @@ async def osuScreenshot(p: 'Player', conn: Connection) -> Optional[bytes]:
     if len(ss_file) > (4 * 1024 * 1024):
         return (400, b'Screenshot file too large.')
 
-    # check if jpeg or png
-    if ss_file[6:10] in (b'JFIF', b'Exif'):
+    if (
+        'v' not in conn.multipart_args or
+        conn.multipart_args['v'] != '1'
+    ):
+        await utils.misc.log_strange_occurrence(
+            f'v=1 missing from osu-screenshot mp args; {conn.multipart_args}'
+        )
+
+    if (
+        ss_file[:4] == b'\xff\xd8\xff\xe0' and
+        ss_file[6:11] == b'JFIF\x00'
+    ):
         extension = 'jpeg'
-    elif ss_file.startswith(b'\211PNG\r\n\032\n'):
+    elif (
+        ss_file[:8] == b'\x89PNG\r\n\x1a\n' and
+        ss_file[-8] == b'\x49END\xae\x42\x60\x82'
+    ):
         extension = 'png'
     else:
         return (400, b'Invalid file type.')
@@ -178,32 +229,32 @@ def gulag_to_osuapi_status(s: int) -> int:
 @domain.route('/web/osu-getbeatmapinfo.php', methods=['POST'])
 @required_args({'u', 'h'})
 @get_login(name_p='u', pass_p='h')
-async def osuGetBeatmapInfo(p: 'Player', conn: Connection) -> Optional[bytes]:
+@acquire_db_conn(aiomysql.DictCursor)
+async def osuGetBeatmapInfo(
+    p: 'Player',
+    conn: Connection,
+    db_cursor: aiomysql.DictCursor
+) -> Optional[bytes]:
     data = orjson.loads(conn.body)
+
+    num_requests = len(data['Filenames']) + len(data['Ids'])
+    log(f'{p} requested info for {num_requests} maps.', Ansi.LCYAN)
+
     ret = []
 
-    for idx, fname in enumerate(data['Filenames']):
-        # Attempt to regex pattern match the filename.
-        # If there is no match, simply ignore this map.
-        # XXX: Sometimes a map will be requested without a
-        # diff name, not really sure how to handle this? lol
-        if not (r := regexes.mapfile.match(fname)):
-            continue
-
+    for idx, map_filename in enumerate(data['Filenames']):
         # try getting the map from sql
-        res = await glob.db.fetch(
+        await db_cursor.execute(
             'SELECT id, set_id, status, md5 '
-            'FROM maps WHERE artist = %s AND '
-            'title = %s AND creator = %s AND '
-            'version = %s', [
-                r['artist'], r['title'],
-                r['creator'], r['version']
-            ]
+            'FROM maps '
+            'WHERE filename = %s',
+            [map_filename]
         )
 
-        if not res:
-            # no map found
-            continue
+        if db_cursor.rowcount == 0:
+            continue # no map found
+
+        res = await db_cursor.fetchone()
 
         # convert from gulag -> osu!api status
         res['status'] = gulag_to_osuapi_status(res['status'])
@@ -214,24 +265,28 @@ async def osuGetBeatmapInfo(p: 'Player', conn: Connection) -> Optional[bytes]:
         # XXX: perhaps user-customizable in the future?
         grades = ['N', 'N', 'N', 'N']
 
-        for score in await glob.db.fetchall(
+        await db_cursor.execute(
             'SELECT grade, mode FROM scores_rx '
             'WHERE map_md5 = %s AND userid = %s '
             'AND status = 2',
             [res['md5'], p.id]
-        ):
+        )
+
+        async for score in db_cursor:
             grades[score['mode']] = score['grade']
 
         ret.append(
             '{i}|{id}|{set_id}|{md5}|{status}|{grades}'.format(
-                i = idx, grades = '|'.join(grades), **res
+                **res,
+                i=idx,
+                grades='|'.join(grades)
             )
         )
 
-    for _ in data['Ids']:
-        # still have yet to see this actually used..
-        stacktrace = utils.misc.get_appropriate_stacktrace()
-        await utils.misc.log_strange_occurrence(stacktrace)
+    if data['Ids']: # still have yet to see this used
+        await utils.misc.log_strange_occurrence(
+            f'{p} requested map(s) info by id ({data["Ids"]})'
+        )
 
     return '\n'.join(ret).encode()
 
@@ -342,7 +397,7 @@ DIRECT_SET_INFO_FMTSTR = (
 
 DIRECT_MAP_INFO_FMTSTR = (
     '[{DifficultyRating:.2f}⭐] {DiffName} '
-    '{{CS{CS} OD{OD} AR{AR} HP{HP}}}@{Mode}'
+    '{{cs: {CS} / od: {OD} / ar: {AR} / hp: {HP}}}@{Mode}'
 )
 
 @domain.route('/web/osu-search.php')
@@ -352,6 +407,9 @@ async def osuSearchHandler(p: 'Player', conn: Connection) -> Optional[bytes]:
     if not conn.args['p'].isdecimal():
         return (400, b'')
 
+    if not glob.has_internet:
+        return b'-1\nosu!direct requires an internet connection.'
+
     if USING_CHIMU:
         search_url = f'{glob.config.mirror}/search'
     else:
@@ -359,7 +417,7 @@ async def osuSearchHandler(p: 'Player', conn: Connection) -> Optional[bytes]:
 
     params = {
         'amount': 100,
-        'offset': conn.args['p']
+        'offset': int(conn.args['p']) * 100
     }
 
     # eventually we could try supporting these,
@@ -383,12 +441,15 @@ async def osuSearchHandler(p: 'Player', conn: Connection) -> Optional[bytes]:
         if USING_CHIMU: # error handling varies
             if resp.status == 404:
                 return b'0' # no maps found
+            elif resp.status == 502: # bad gateway, happens a lot with chimu :/
+                return b'-1\nFailed to retrieve data from the beatmap mirror.'
             elif resp.status != 200:
                 stacktrace = utils.misc.get_appropriate_stacktrace()
                 await utils.misc.log_strange_occurrence(stacktrace)
+                return b'-1\nFailed to retrieve data from the beatmap mirror.'
         else: # cheesegull
             if resp.status != 200:
-                return b'Failed to retrieve data from mirror!'
+                return b'-1\nFailed to retrieve data from the beatmap mirror.'
 
         result = await resp.json()
 
@@ -396,7 +457,7 @@ async def osuSearchHandler(p: 'Player', conn: Connection) -> Optional[bytes]:
             if result['code'] != 0:
                 stacktrace = utils.misc.get_appropriate_stacktrace()
                 await utils.misc.log_strange_occurrence(stacktrace)
-                return b'Failed to retrieve data from mirror!'
+                return b'-1\nFailed to retrieve data from the beatmap mirror.'
             result = result['data']
 
     lresult = len(result) # send over 100 if we receive
@@ -483,13 +544,17 @@ async def osuSearchSetHandler(p: 'Player', conn: Connection) -> Optional[bytes]:
             '0|0|0|0|0').format(**bmapset).encode()
     # 0s are threadid, has_vid, has_story, filesize, filesize_novid
 
-def chart_entry(name: str, k: Optional[object], v: object) -> str:
-    return f'{name}Before:{k or ""}|{name}After:{v}'
+def chart_entry(name: str, before: Optional[object], after: object) -> str:
+    return f'{name}Before:{before or ""}|{name}After:{after}'
 
 @domain.route('/web/osu-submit-modular-selector.php', methods=['POST'])
 @required_mpargs({'x', 'ft', 'score', 'fs', 'bmk', 'iv',
                   'c1', 'st', 'pass', 'osuver', 's'})
-async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
+@acquire_db_conn(aiomysql.DictCursor)
+async def osuSubmitModularSelector(
+    conn: Connection,
+    db_cursor: aiomysql.DictCursor
+) -> Optional[bytes]:
     mp_args = conn.multipart_args
 
     # Parse our score data into a score obj.
@@ -507,14 +572,14 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         return
     elif not score.bmap:
         # Map does not exist, most likely unsubmitted.
-        return b'error: no'
+        return b'error: beatmap'
     elif score.bmap.status == RankedStatus.Pending:
         # XXX: Perhaps will accept in the future,
         return b'error: no' # not now though.
 
     # we should update their activity no matter
     # what the result of the score submission is.
-    await score.player.update_latest_activity()
+    score.player.update_latest_activity()
 
     # attempt to update their stats if their
     # gm/gm-affecting-mods change at all.
@@ -525,7 +590,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         if not score.player.restricted:
             glob.players.enqueue(packets.userStats(score.player))
 
-    scores_table = score.mode.sql_table
+    scores_table = score.mode.scores_table
     mode_vn = score.mode.as_vanilla
 
     # Check for score duplicates
@@ -535,7 +600,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
     # percent of the replay's frames to really determine
     # whether the plays are the same, rather than just
     # using the score/header data.
-    res = await glob.db.fetch(
+    await db_cursor.execute(
         f'SELECT 1 FROM {scores_table} '
         'WHERE play_time > DATE_SUB(NOW(), INTERVAL 2 MINUTE) ' # last 2mins
         'AND mode = %s AND map_md5 = %s '
@@ -545,6 +610,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
             score.player.id, score.mods, score.score
         ]
     )
+    res = await db_cursor.fetchone()
 
     if res:
         log(f'{score.player} submitted a duplicate score.', Ansi.LYELLOW)
@@ -605,21 +671,25 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
             if score.mods:
                 ann.insert(1, f'+{score.mods!r}')
 
-            scoring = 'pp' if score.mode >= GameMode.rx_std else 'score'
+            scoring_metric = 'pp' if score.mode >= GameMode.rx_std else 'score'
 
             # If there was previously a score on the map, add old #1.
-            prev_n1 = await glob.db.fetch(
+            await db_cursor.execute(
                 'SELECT u.id, name FROM users u '
                 f'INNER JOIN {scores_table} s ON u.id = s.userid '
                 'WHERE s.map_md5 = %s AND s.mode = %s '
                 'AND s.status = 2 AND u.priv & 1 '
-                f'ORDER BY s.{scoring} DESC LIMIT 1',
-                [score.bmap.md5, mode_vn], _dict=False
+                f'ORDER BY s.{scoring_metric} DESC LIMIT 1',
+                [score.bmap.md5, mode_vn]
             )
 
-            if prev_n1 and score.player.id != prev_n1[0]:
-                pid, pname = prev_n1
-                ann.append(f'(Previous #1: [https://{BASE_DOMAIN}/u/{pid} {pname}])')
+            if db_cursor.rowcount != 0:
+                prev_n1 = await db_cursor.fetchone()
+
+                if score.player.id != prev_n1['id']:
+                    pid = prev_n1['id']
+                    pname = prev_n1['name']
+                    ann.append(f'(Previous #1: [https://{BASE_DOMAIN}/u/{pid} {pname}])')
 
             score.player.enqueue(packets.notification(f'You achieved #1! ({performance})'))
             announce_chan.send(' '.join(ann), sender=score.player, to_self=True)
@@ -627,14 +697,14 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         # this score is our best score.
         # update any preexisting personal best
         # records with SubmissionStatus.SUBMITTED.
-        await glob.db.execute(
+        await db_cursor.execute(
             f'UPDATE {scores_table} SET status = 1 '
             'WHERE status = 2 AND map_md5 = %s '
             'AND userid = %s AND mode = %s',
             [score.bmap.md5, score.player.id, mode_vn]
         )
 
-    score.id = await glob.db.execute(
+    await db_cursor.execute(
         f'INSERT INTO {scores_table} '
         'VALUES (NULL, '
         '%s, %s, %s, %s, '
@@ -649,6 +719,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
             score.time_elapsed, score.client_flags, score.player.id, score.perfect
         ]
     )
+    score.id = db_cursor.lastrowid
 
     if score.passed:
         # All submitted plays should have a replay.
@@ -686,9 +757,10 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
     stats.playtime += score.time_elapsed // 1000
     stats.plays += 1
 
+    mode_sql = format(score.mode, 'sql')
     stats_query = [ # build a list of params to update
-        'UPDATE stats SET plays_{0:sql} = %s',
-        'playtime_{0:sql} = %s'
+        'UPDATE stats SET plays_{mode} = %s',
+        'playtime_{mode} = %s'
     ]
     stats_params = [stats.plays, stats.playtime]
 
@@ -699,12 +771,12 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         # update max combo
         if score.max_combo > stats.max_combo:
             stats.max_combo = score.max_combo
-            stats_query.append('max_combo_{0:sql} = %s')
+            stats_query.append('max_combo_{mode} = %s')
             stats_params.append(stats.max_combo)
 
         # update total score
         stats.tscore += score.score
-        stats_query.append('tscore_{0:sql} = %s')
+        stats_query.append('tscore_{mode} = %s')
         stats_params.append(stats.tscore)
 
         if score.status == SubmissionStatus.BEST:
@@ -718,7 +790,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
                 # it's score from our ranked score.
                 additional_rscore -= score.prev_best.score
             stats.rscore += additional_rscore
-            stats_query.append('rscore_{0:sql} = %s')
+            stats_query.append('rscore_{mode} = %s')
             stats_params.append(stats.rscore)
 
             # fetch scores sorted by pp for total acc/pp calc
@@ -726,7 +798,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
             # because bonus pp counts the total amount of ranked
             # scores. i'm aware this scales horribly and it'll
             # likely be split into two queries in the future.
-            res = await glob.db.fetchall(
+            await db_cursor.execute(
                 f'SELECT s.pp, s.acc FROM {scores_table} s '
                 'INNER JOIN maps m ON s.map_md5 = m.md5 '
                 'WHERE s.userid = %s AND s.mode = %s '
@@ -735,8 +807,8 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
                 [score.player.id, mode_vn]
             )
 
-            # calculate total accuracy & pp with top 100 scores
-            top_100_pp = res[:100] # (top 100 by pp)
+            total_scores = db_cursor.rowcount
+            top_100_pp = await db_cursor.fetchmany(size=100)
 
             # update total weighted accuracy
             tot = div = 0
@@ -745,36 +817,37 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
                 tot += row['acc'] * add
                 div += add
             stats.acc = tot / div
-            stats_query.append('acc_{0:sql} = %s')
+            stats_query.append('acc_{mode} = %s')
             stats_params.append(stats.acc)
 
             # update total weighted pp
             weighted_pp = sum([row['pp'] * 0.95 ** i
                                for i, row in enumerate(top_100_pp)])
-            bonus_pp = 416.6667 * (1 - 0.9994 ** len(res))
+            bonus_pp = 416.6667 * (1 - 0.9994 ** total_scores)
             stats.pp = round(weighted_pp + bonus_pp)
-            stats_query.append('pp_{0:sql} = %s')
+            stats_query.append('pp_{mode} = %s')
             stats_params.append(stats.pp)
 
             # update rank
             # TODO: adjust any people inbetween we passed,
             # check whether they're online, and push their
             # stats to all online players if nescessary.
-            stats.rank = (await glob.db.fetch(
+            await db_cursor.execute(
                 'SELECT COUNT(*) AS higher_pp_players '
                 'FROM stats s '
                 'INNER JOIN users u USING(id) '
-                f'WHERE s.pp_{score.mode:sql} > %s '
+                f'WHERE s.pp_{mode_sql} > %s '
                 'AND u.priv & 1 and u.id != %s',
                 [stats.pp, score.player.id]
-            ))['higher_pp_players'] + 1
+            )
+            stats.rank = 1 + (await db_cursor.fetchone())['higher_pp_players']
 
     # construct the sql query of any stat changes
-    stats_query = ','.join(stats_query).format(score.mode) + ' WHERE id = %s'
+    stats_query = f"{','.join(stats_query).format(mode=mode_sql)} WHERE id = %s"
     stats_params.append(score.player.id)
 
     # send any stat changes to sql, and other players
-    await glob.db.execute(stats_query, stats_params)
+    await db_cursor.execute(stats_query, stats_params)
     glob.players.enqueue(packets.userStats(score.player))
 
     if not score.player.restricted:
@@ -783,7 +856,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         if score.passed:
             score.bmap.passes += 1
 
-        await glob.db.execute(
+        await db_cursor.execute(
             'UPDATE maps SET plays = %s, '
             'passes = %s WHERE md5 = %s',
             [score.bmap.plays, score.bmap.passes, score.bmap.md5]
@@ -816,14 +889,12 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         # achievements unlocked only for non-restricted players
         if not score.player.restricted:
             if score.bmap.awards_pp:
-                player_achs = score.player.achievements[mode_vn]
-
-                for ach in glob.achievements[mode_vn]:
-                    if ach in player_achs:
+                for ach in glob.achievements:
+                    if ach in score.player.achievements:
                         # player already has this achievement.
                         continue
 
-                    if ach.cond(score):
+                    if ach.cond(score, mode_vn):
                         await score.player.unlock_achievement(ach)
                         achievements.append(ach)
 
@@ -844,7 +915,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
         # append beatmap ranking chart (#2)
         charts.append('|'.join((
             'chartId:beatmap',
-            f'chartUrl:https://{BASE_DOMAIN}/b/{score.bmap.id}',
+            f'chartUrl:{score.bmap.set.url}',
             'chartName:Beatmap Ranking',
 
             *((
@@ -895,6 +966,7 @@ async def osuSubmitModularSelector(conn: Connection) -> Optional[bytes]:
 
     log(f'[{score.mode!r}] {score.player} submitted a score! '
         f'({score.status!r}, {score.pp:,.2f}pp / {stats.pp:,}pp)', Ansi.LGREEN)
+
     return ret
 
 @domain.route('/web/osu-getreplay.php')
@@ -918,7 +990,12 @@ async def getReplay(p: 'Player', conn: Connection) -> Optional[bytes]:
 @domain.route('/web/osu-rate.php')
 @required_args({'u', 'p', 'c'})
 @get_login(name_p='u', pass_p='p', auth_error=b'auth fail')
-async def osuRate(p: 'Player', conn: Connection) -> Optional[bytes]:
+@acquire_db_conn(aiomysql.Cursor)
+async def osuRate(
+    p: 'Player',
+    conn: Connection,
+    db_cursor: aiomysql.Cursor
+) -> Optional[bytes]:
     map_md5 = conn.args['c']
 
     if 'v' not in conn.args:
@@ -927,14 +1004,14 @@ async def osuRate(p: 'Player', conn: Connection) -> Optional[bytes]:
         if map_md5 not in glob.cache['beatmap']:
             return b'no exist'
 
-        cached = glob.cache['beatmap'][map_md5]['map']
+        cached = glob.cache['beatmap'][map_md5]
 
         # only allow rating on maps with a leaderboard.
         if cached.status < RankedStatus.Ranked:
             return b'not ranked'
 
         # osu! client is checking whether we can rate the map or not.
-        alreadyvoted = await glob.db.fetch(
+        await db_cursor.execute(
             'SELECT 1 FROM ratings WHERE '
             'map_md5 = %s AND userid = %s',
             [map_md5, p.id]
@@ -942,24 +1019,25 @@ async def osuRate(p: 'Player', conn: Connection) -> Optional[bytes]:
 
         # the client hasn't rated the map, so simply
         # tell them that they can submit a rating.
-        if not alreadyvoted:
+        if db_cursor.rowcount == 0:
             return b'ok'
     else:
         # the client is submitting a rating for the map.
         if not (rating := conn.args['v']).isdecimal():
             return
 
-        await glob.db.execute(
+        await db_cursor.execute(
             'INSERT INTO ratings '
             'VALUES (%s, %s, %s)',
             [p.id, map_md5, int(rating)]
         )
 
-    ratings = [x[0] for x in await glob.db.fetchall(
+    await db_cursor.execute(
         'SELECT rating FROM ratings '
         'WHERE map_md5 = %s',
-        [map_md5], _dict=False
-    )]
+        [map_md5]
+    )
+    ratings = [row[0] async for row in await db_cursor]
 
     # send back the average rating
     avg = sum(ratings) / len(ratings)
@@ -974,11 +1052,22 @@ class RankingType(IntEnum):
     Friends = 3
     Country = 4
 
+SCORE_LISTING_FMTSTR = (
+    '{id}|{name}|{score}|{max_combo}|'
+    '{n50}|{n100}|{n300}|{nmiss}|{nkatu}|{ngeki}|'
+    '{perfect}|{mods}|{userid}|{rank}|{time}|{has_replay}'
+)
+
 @domain.route('/web/osu-osz2-getscores.php')
 @required_args({'s', 'vv', 'v', 'c', 'f', 'm',
                 'i', 'mods', 'h', 'a', 'us', 'ha'})
 @get_login(name_p='us', pass_p='ha')
-async def getScores(p: 'Player', conn: Connection) -> Optional[bytes]:
+@acquire_db_conn(aiomysql.DictCursor)
+async def getScores(
+    p: 'Player',
+    conn: Connection,
+    db_cursor: aiomysql.DictCursor
+) -> Optional[bytes]:
     if not all([ # make sure all int args are integral
         _isdecimal(conn.args[k], _negative=True)
         for k in ('mods', 'v', 'm', 'i')
@@ -1000,6 +1089,8 @@ async def getScores(p: 'Player', conn: Connection) -> Optional[bytes]:
     mode = GameMode.from_params(mode_vn, mods)
 
     map_set_id = int(conn.args['i'])
+    has_set_id = map_set_id > 0
+
     rank_type = RankingType(int(conn.args['v']))
 
     # attempt to update their stats if their
@@ -1011,70 +1102,56 @@ async def getScores(p: 'Player', conn: Connection) -> Optional[bytes]:
         if not p.restricted:
             glob.players.enqueue(packets.userStats(p))
 
-    table = mode.sql_table
-    scoring = 'pp' if mode >= GameMode.rx_std else 'score'
+    scores_table = mode.scores_table
+    scoring_metric = 'pp' if mode >= GameMode.rx_std else 'score'
 
-    if not (bmap := Beatmap.from_md5_cache(map_md5)):
-        # if not found in memory, get from sql.
-        if not (bmap := await Beatmap.from_md5_sql(map_md5)):
-            # Not found in either cache or sql; we need to do an api request.
-            # osu! gives us the md5, but also the set id for the map (if known);
-            # we can simply do a single osu!api request to get any missing
-            # difficulties at once, saving resources in the long term.
-            if map_set_id != -1:
-                await Beatmap.cache_set(map_set_id)
-                bmap = Beatmap.from_md5_cache(map_md5)
+    bmap = await Beatmap.from_md5(map_md5, set_id=map_set_id)
+
+    if not bmap:
+        # map not found, figure out whether it needs an
+        # update or isn't submitted using it's filename.
+
+        if (
+            has_set_id and
+            map_set_id not in glob.cache['beatmapset']
+        ):
+            # set not cached, it doesn't exist
+            glob.cache['unsubmitted'].add(map_md5)
+            return b'-1|false'
+
+        map_filename = unquote(conn.args['f'].replace('+', ' '))
+
+        if has_set_id:
+            # we can look it up in the specific set from cache
+            for bmap in glob.cache['beatmapset'][map_set_id].maps:
+                if map_filename == bmap.filename:
+                    map_exists = True
+                    break
             else:
-                # map set id not known by client;
-                # they probably just downloaded it?
-                bmap = await Beatmap.from_md5_osuapi(map_md5)
-
-            # Now that all diffs have been cached, try getting from the
-            # cache using the md5; if it's still not found, the map is
-            # invalid - either meaning it's out of date, or unsubmitted.
-            if not bmap:
-                # osu! also sends us the filename of the .osu file requested;
-                # search for a match in our db - since we just cached all
-                # versions of the map, a match will mean that the map is
-                # simply out of date, while no match should mean unsubmitted.
-                map_filename = unquote(conn.args['f'].replace('+', ' '))
-
-                if not (re := regexes.mapfile.match(map_filename)):
-                    # if a mapfile has invalid syntax, it's almost certainly
-                    # some cursed abomination made by the user themself..
-                    # NOTE: logging because i'm not sure if im a liar B)
-                    log(f'{p} sent invalid map filename: {map_filename}.', Ansi.LRED)
-                    glob.cache['unsubmitted'].add(map_md5)
-                    return b'-1|false'
-
-                set_exists = await glob.db.fetch(
-                    'SELECT 1 FROM maps '
-                    'WHERE artist = %s AND title = %s '
-                    'AND creator = %s AND version = %s', [
-                        re['artist'], re['title'],
-                        re['creator'], re['version']
-                    ]
-                )
-
-                if set_exists:
-                    # map can be updated.
-                    glob.cache['needs_update'].add(map_md5)
-                    return b'1|false'
-                else:
-                    # map is unsubmitted.
-                    # add this map to the unsubmitted cache, so
-                    # that we don't have to make this request again.
-                    glob.cache['unsubmitted'].add(map_md5)
-                    return b'-1|false'
+                map_exists = False
         else:
-            # found in sql - add to cache
-            glob.cache['beatmap'][bmap.md5] = {
-                'timeout': (glob.config.map_cache_timeout +
-                            time.time()),
-                'map': bmap
-            }
+            # we can't find it on the osu!api by md5,
+            # and we don't have the set id, so we must
+            # look it up in sql from the filename.
+            map_exists = await glob.db.fetch(
+                'SELECT 1 FROM maps '
+                'WHERE filename = %s',
+                [map_filename]
+            ) is not None
 
-    # we have found a beatmap for the request.
+        if map_exists:
+            # map can be updated.
+            glob.cache['needs_update'].add(map_md5)
+            return b'1|false'
+        else:
+            # map is unsubmitted.
+            # add this map to the unsubmitted cache, so
+            # that we don't have to make this request again.
+            glob.cache['unsubmitted'].add(map_md5)
+            return b'-1|false'
+
+    # we've found a beatmap for the request.
+
     if glob.datadog:
         glob.datadog.increment('gulag.leaderboards_served')
 
@@ -1085,12 +1162,12 @@ async def getScores(p: 'Player', conn: Connection) -> Optional[bytes]:
 
     # statuses: 0: failed, 1: passed but not top, 2: passed top
     query = [
-        f"SELECT s.id, s.{scoring} AS _score, "
+        f"SELECT s.id, s.{scoring_metric} AS _score, "
         "s.max_combo, s.n50, s.n100, s.n300, "
         "s.nmiss, s.nkatu, s.ngeki, s.perfect, s.mods, "
         "UNIX_TIMESTAMP(s.play_time) time, u.id userid, "
         "COALESCE(CONCAT('[', c.tag, '] ', u.name), u.name) AS name "
-        f"FROM {table} s "
+        f"FROM {scores_table} s "
         "INNER JOIN users u ON u.id = s.userid "
         "LEFT JOIN clans c ON c.id = u.clan_id "
         "WHERE s.map_md5 = %s AND s.status = 2 "
@@ -1107,25 +1184,27 @@ async def getScores(p: 'Player', conn: Connection) -> Optional[bytes]:
         params.append(p.friends | {p.id})
     elif rank_type == RankingType.Country:
         query.append('AND u.country = %s')
-        params.append(p.country[1]) # letters, not id
+        params.append(p.geoloc['country']['iso_code'])
 
     query.append('ORDER BY _score DESC LIMIT 50')
 
-    scores = await glob.db.fetchall(' '.join(query), params)
+    await db_cursor.execute(' '.join(query), params)
+    num_scores = db_cursor.rowcount
+    scores = await db_cursor.fetchall()
 
     l: list[str] = []
 
     # ranked status, serv has osz2, bid, bsid, len(scores)
-    l.append(f'{int(bmap.status)}|false|{bmap.id}|'
-             f'{bmap.set_id}|{len(scores) if scores else 0}')
+    l.append(f'{int(bmap.status)}|false|{bmap.id}|{bmap.set_id}|{num_scores}')
 
     # fetch beatmap rating from sql
-    rating = (await glob.db.fetch(
+    await db_cursor.execute(
         'SELECT AVG(rating) rating '
         'FROM ratings '
         'WHERE map_md5 = %s',
         [bmap.md5]
-    ))['rating']
+    )
+    rating = (await db_cursor.fetchone())['rating']
 
     if rating is not None:
         rating = f'{rating:.1f}'
@@ -1138,53 +1217,56 @@ async def getScores(p: 'Player', conn: Connection) -> Optional[bytes]:
 
     if not scores:
         # simply return an empty set.
-        return '\n'.join(l + ['', '']).encode()
+        return ('\n'.join(l) + '\n\n').encode()
 
-    p_best = await glob.db.fetch(
-        f'SELECT id, {scoring} AS _score, '
+    # fetch player's personal best score
+    await db_cursor.execute(
+        f'SELECT id, {scoring_metric} AS _score, '
         'max_combo, n50, n100, n300, '
         'nmiss, nkatu, ngeki, perfect, mods, '
         'UNIX_TIMESTAMP(play_time) time '
-        f'FROM {table} '
+        f'FROM {scores_table} '
         'WHERE map_md5 = %s AND mode = %s '
         'AND userid = %s AND status = 2 '
         'ORDER BY _score DESC LIMIT 1', [
             map_md5, mode_vn, p.id
         ]
     )
-
-    score_fmt = ('{id}|{name}|{score}|{max_combo}|'
-                 '{n50}|{n100}|{n300}|{nmiss}|{nkatu}|{ngeki}|'
-                 '{perfect}|{mods}|{userid}|{rank}|{time}|{has_replay}')
+    p_best = await db_cursor.fetchone()
 
     if p_best:
         # calculate the rank of the score.
-        p_best_rank = 1 + (await glob.db.fetch(
-            f'SELECT COUNT(*) AS count FROM {table} s '
+        await db_cursor.execute(
+            f'SELECT COUNT(*) AS count FROM {scores_table} s '
             'INNER JOIN users u ON u.id = s.userid '
             'WHERE s.map_md5 = %s AND s.mode = %s '
             'AND s.status = 2 AND u.priv & 1 '
-            f'AND s.{scoring} > %s', [
+            f'AND s.{scoring_metric} > %s', [
                 map_md5, mode_vn,
                 p_best['_score']
             ]
-        ))['count']
+        )
+        p_best_rank = 1 + (await db_cursor.fetchone())['count']
 
         l.append(
-            score_fmt.format(
+            SCORE_LISTING_FMTSTR.format(
                 **p_best,
-                name = p.full_name, userid = p.id,
-                score = int(p_best['_score']),
-                has_replay = '1', rank = p_best_rank
+                name=p.full_name,
+                userid=p.id,
+                score=int(p_best['_score']),
+                has_replay='1',
+                rank=p_best_rank
             )
         )
     else:
         l.append('')
 
     l.extend([
-        score_fmt.format(
-            **s, score = int(s['_score']),
-            has_replay = '1', rank = idx + 1
+        SCORE_LISTING_FMTSTR.format(
+            **s,
+            score=int(s['_score']),
+            has_replay='1',
+            rank=idx + 1
         ) for idx, s in enumerate(scores)
     ])
 
@@ -1229,7 +1311,7 @@ async def osuComment(p: 'Player', conn: Connection) -> Optional[bytes]:
             ret.append('{time}\t{target_type}\t'
                        '{fmt}\t{comment}'.format(fmt=fmt, **cmt))
 
-        await p.update_latest_activity()
+        p.update_latest_activity()
         return '\n'.join(ret).encode()
 
     elif action == 'post':
@@ -1271,7 +1353,7 @@ async def osuComment(p: 'Player', conn: Connection) -> Optional[bytes]:
              sttime, comment, colour]
         )
 
-        await p.update_latest_activity()
+        p.update_latest_activity()
         return # empty resp is fine
 
     else:
@@ -1285,16 +1367,14 @@ async def osuMarkAsRead(p: 'Player', conn: Connection) -> Optional[bytes]:
     if not (t_name := unquote(conn.args['channel'])):
         return # no channel specified
 
-    if not (t := await glob.players.get_ensure(name=t_name)):
-        return
-
-    # mark any unread mail from this user as read.
-    await glob.db.execute(
-        'UPDATE `mail` SET `read` = 1 '
-        'WHERE `to_id` = %s AND `from_id` = %s '
-        'AND `read` = 0',
-        [p.id, t.id]
-    )
+    if t := await glob.players.get_ensure(name=t_name):
+        # mark any unread mail from this user as read.
+        await glob.db.execute(
+            'UPDATE `mail` SET `read` = 1 '
+            'WHERE `to_id` = %s AND `from_id` = %s '
+            'AND `read` = 0',
+            [p.id, t.id]
+        )
 
 @domain.route('/web/osu-getseasonal.php')
 async def osuSeasonal(conn: Connection) -> Optional[bytes]:
@@ -1309,29 +1389,39 @@ async def banchoConnect(conn: Connection) -> Optional[bytes]:
 
         # NOTE: you can actually return an endpoint here
         # for the client to use as a bancho endpoint.
-        return b'allez-vous owo'
+        return
 
     # TODO: perhaps handle this..?
     NotImplemented
+
+_checkupdates_cache = { # default timeout is 1h, set on request.
+    'cuttingedge': {'check': None, 'path': None, 'timeout': 0},
+    'stable40': {'check': None, 'path': None, 'timeout': 0},
+    'beta40': {'check': None, 'path': None, 'timeout': 0},
+    'stable': {'check': None, 'path': None, 'timeout': 0}
+}
 
 # NOTE: this will only be triggered when using a server switcher.
 @domain.route('/web/check-updates.php')
 @required_args({'action', 'stream'})
 async def checkUpdates(conn: Connection) -> Optional[bytes]:
+    if not glob.has_internet:
+        return (503, b'') # requires internet connection
+
     action = conn.args['action']
     stream = conn.args['stream']
 
     if action not in ('check', 'path', 'error'):
-        return (400, b'Invalid action.')
+        return (400, b'') # invalid action
 
     if stream not in ('cuttingedge', 'stable40', 'beta40', 'stable'):
-        return (400, b'Invalid stream.')
+        return (400, b'') # invalid stream
 
     if action == 'error':
         # client is just reporting an error updating
         return
 
-    cache = glob.cache['update'][stream]
+    cache = _checkupdates_cache[stream]
     current_time = int(time.time())
 
     if cache[action] and cache['timeout'] > current_time:
@@ -1340,7 +1430,7 @@ async def checkUpdates(conn: Connection) -> Optional[bytes]:
     url = 'https://old.ppy.sh/web/check-updates.php'
     async with glob.http.get(url, params = conn.args) as resp:
         if not resp or resp.status != 200:
-            return (503, b'Failed to retrieve data from osu!')
+            return (503, b'') # failed to get data from osu
 
         result = await resp.read()
 
@@ -1611,10 +1701,10 @@ async def api_get_player_scores(conn: Connection) -> Optional[bytes]:
         'SELECT id, map_md5, score, pp, acc, max_combo, '
         'mods, n300, n100, n50, nmiss, ngeki, nkatu, grade, '
         'status, mode, play_time, time_elapsed, perfect '
-        f'FROM {mode.sql_table} WHERE userid = %s'
+        f'FROM {mode.scores_table} WHERE userid = %s AND mode = %s'
     ]
 
-    params = [p.id]
+    params = [p.id, mode.as_vanilla]
 
     if mods is not None:
         if strong_equality:
@@ -1657,7 +1747,17 @@ async def api_get_player_scores(conn: Connection) -> Optional[bytes]:
             'diff': bmap.diff
         }
 
-    return JSON({'status': 'success', 'scores': res})
+    player_info = {
+        'id': p.id,
+        'name': p.name,
+        'clan': {
+            'id': p.clan.id,
+            'name': p.clan.name,
+            'tag': p.clan.tag
+        } if p.clan else None
+    }
+
+    return JSON({'status': 'success', 'scores': res, 'player': player_info})
 
 @domain.route('/api/get_player_most_played')
 async def api_get_player_most_played(conn: Connection) -> Optional[bytes]:
@@ -1705,7 +1805,7 @@ async def api_get_player_most_played(conn: Connection) -> Optional[bytes]:
     res = await glob.db.fetchall(
         'SELECT m.md5, m.id, m.set_id, m.status, '
         'm.artist, m.title, m.version, m.creator, COUNT(*) plays '
-        f'FROM {mode.sql_table} s '
+        f'FROM {mode.scores_table} s '
         'INNER JOIN maps m ON m.md5 = s.map_md5 '
         'WHERE s.userid = %s '
         'AND s.mode = %s '
@@ -1825,12 +1925,18 @@ async def api_get_map_scores(conn: Connection) -> Optional[bytes]:
     else:
         limit = 50
 
+    # NOTE: userid will eventually become player_id,
+    # along with everywhere else in the codebase.
     query = [
-        'SELECT map_md5, score, pp, acc, max_combo, mods, '
-        'n300, n100, n50, nmiss, ngeki, nkatu, grade, status, '
-        'mode, play_time, time_elapsed, userid, perfect '
-        f'FROM {mode.sql_table} '
-        'WHERE map_md5 = %s AND mode = %s AND status = 2'
+        'SELECT s.map_md5, s.score, s.pp, s.acc, s.max_combo, s.mods, '
+        's.n300, s.n100, s.n50, s.nmiss, s.ngeki, s.nkatu, s.grade, s.status, '
+        's.mode, s.play_time, s.time_elapsed, s.userid, s.perfect, '
+        'u.name player_name, '
+        'c.id clan_id, c.name clan_name, c.tag clan_tag '
+        f'FROM {mode.scores_table} s '
+        'INNER JOIN users u ON u.id = s.userid '
+        'LEFT JOIN clans c ON c.id = u.clan_id '
+        'WHERE s.map_md5 = %s AND s.mode = %s AND s.status = 2'
     ]
     params = [bmap.md5, mode.as_vanilla]
 
@@ -2191,43 +2297,48 @@ async def get_osz(conn: Connection) -> Optional[bytes]:
 @domain.route(re.compile(r'^/web/maps/'))
 async def get_updated_beatmap(conn: Connection) -> Optional[bytes]:
     """Send the latest .osu file the server has for a given map."""
-    if not (re := regexes.mapfile.match(unquote(conn.path[10:]))):
-        log(f'Requested invalid map update {conn.path}.', Ansi.LRED)
-        return (400, b'Invalid map file syntax.')
+    if conn.headers['Host'] == 'osu.ppy.sh':
+        # server switcher, use old method
+        map_filename = unquote(conn.path[10:])
 
-    if not (res := await glob.db.fetch(
-        'SELECT id, md5 FROM maps WHERE '
-        'artist = %s AND title = %s '
-        'AND creator = %s AND version = %s', [
-            re['artist'], re['title'],
-            re['creator'], re['version']
-        ]
-    )):
-        return (404, b'Map not found.')
+        if not (res := await glob.db.fetch(
+            'SELECT id, md5 '
+            'FROM maps '
+            'WHERE filename = %s',
+            [map_filename]
+        )):
+            return (404, b'') # map not found in sql
 
-    path = BEATMAPS_PATH / f'{res["id"]}.osu'
+        path = BEATMAPS_PATH / f'{res["id"]}.osu'
 
-    if (
-        path.exists() and
-        res['md5'] == hashlib.md5(path.read_bytes()).hexdigest()
-    ):
-        # up to date map found on disk.
-        content = path.read_bytes()
+        if (
+            path.exists() and
+            res['md5'] == hashlib.md5(path.read_bytes()).hexdigest()
+        ):
+            # up to date map found on disk.
+            content = path.read_bytes()
+        else:
+            if not glob.has_internet:
+                return (503, b'') # requires internet connection
+
+            # map not found, or out of date; get from osu!
+            url = f"https://old.ppy.sh/osu/{res['id']}"
+
+            async with glob.http.get(url) as resp:
+                if not resp or resp.status != 200:
+                    log(f'Could not find map {path}!', Ansi.LRED)
+                    return (404, b'') # couldn't find on osu!'s server
+
+                content = await resp.read()
+
+            # save it to disk for future
+            path.write_bytes(content)
+
+        return content
     else:
-        # map not found, or out of date; get from osu!
-        url = f"https://old.ppy.sh/osu/{res['id']}"
-
-        async with glob.http.get(url) as resp:
-            if not resp or resp.status != 200:
-                log(f'Could not find map {path}!', Ansi.LRED)
-                return (404, b'Could not find map on osu! server.')
-
-            content = await resp.read()
-
-        # save it to disk for future
-        path.write_bytes(content)
-
-    return content
+        # using -devserver, just redirect them to osu
+        conn.resp_headers['Location'] = f'https://osu.ppy.sh{conn.path}'
+        return (301, b'')
 
 @domain.route('/p/doyoureallywanttoaskpeppy')
 async def peppyDMHandler(conn: Connection) -> Optional[bytes]:
@@ -2240,10 +2351,14 @@ async def peppyDMHandler(conn: Connection) -> Optional[bytes]:
 
 @domain.route('/users', methods=['POST'])
 @ratelimit(period=300, max_count=15) # 15 registrations / 5mins
-async def register_account(conn: Connection) -> Optional[bytes]:
+@acquire_db_conn(aiomysql.Cursor)
+async def register_account(
+    conn: Connection,
+    db_cursor: aiomysql.Cursor
+) -> Optional[bytes]:
     mp_args = conn.multipart_args
 
-    name = mp_args['user[username]']
+    name = mp_args['user[username]'].strip()
     email = mp_args['user[user_email]']
     pw_txt = mp_args['user[password]']
 
@@ -2268,17 +2383,20 @@ async def register_account(conn: Connection) -> Optional[bytes]:
     if name in glob.config.disallowed_names:
         errors['username'].append('Disallowed username; pick another.')
 
-    if await glob.db.fetch('SELECT 1 FROM users WHERE name = %s', [name]):
-        errors['username'].append('Username already taken by another player.')
+    if 'username' not in errors:
+        await db_cursor.execute('SELECT 1 FROM users WHERE name = %s', [name])
+        if db_cursor.rowcount != 0:
+            errors['username'].append('Username already taken by another player.')
 
     # Emails must:
     # - match the regex `^[^@\s]{1,200}@[^@\s\.]{1,30}\.[^@\.\s]{1,24}$`
     # - not already be taken by another player
     if not regexes.email.match(email):
         errors['user_email'].append('Invalid email syntax.')
-
-    if await glob.db.fetch('SELECT 1 FROM users WHERE email = %s', email):
-        errors['user_email'].append('Email already taken by another player.')
+    else:
+        await db_cursor.execute('SELECT 1 FROM users WHERE email = %s', [email])
+        if db_cursor.rowcount != 0:
+            errors['user_email'].append('Email already taken by another player.')
 
     # Passwords must:
     # - be within 8-32 characters in length
@@ -2294,7 +2412,8 @@ async def register_account(conn: Connection) -> Optional[bytes]:
         errors['password'].append('That password was deemed too simple.')
 
     if errors:
-        # we have errors to send back.
+        # we have errors to send back, send them back delimited by newlines.
+        errors = {k: ['\n'.join(v)] for k, v in errors.items()}
         errors_full = {'form_error': {'user': errors}}
         return (400, orjson.dumps(errors_full))
 
@@ -2309,16 +2428,50 @@ async def register_account(conn: Connection) -> Optional[bytes]:
 
             safe_name = name.lower().replace(' ', '_')
 
+            if 'CF-IPCountry' in conn.headers:
+                # best case, dev has enabled ip geolocation in the
+                # network tab of cloudflare, so it sends the iso code.
+                country = conn.headers['CF-IPCountry']
+            else:
+                # backup method, get the user's ip and
+                # do a db lookup to get their country.
+                if 'CF-Connecting-IP' in conn.headers:
+                    ip = conn.headers['CF-Connecting-IP']
+                else:
+                    # if the request has been forwarded, get the origin
+                    forwards = conn.headers['X-Forwarded-For'].split(',')
+                    if len(forwards) != 1:
+                        ip = forwards[0]
+                    else:
+                        ip = conn.headers['X-Real-IP']
+
+                if ip != '127.0.0.1':
+                    if glob.geoloc_db is not None:
+                        # decent case, dev has downloaded a geoloc db from
+                        # maxmind, so we can do a local db lookup. (~1-5ms)
+                        # https://www.maxmind.com/en/home
+                        geoloc = utils.misc.fetch_geoloc_db(ip)
+                    else:
+                        # worst case, we must do an external db lookup
+                        # using a public api. (depends, `ping ip-api.com`)
+                        geoloc = await utils.misc.fetch_geoloc_web(ip)
+
+                    country = geoloc['country']
+                else:
+                    # localhost, unknown country
+                    country = 'XX'
+
             # add to `users` table.
-            user_id = await glob.db.execute(
+            await db_cursor.execute(
                 'INSERT INTO users '
-                '(name, safe_name, email, pw_bcrypt, creation_time, latest_activity) '
-                'VALUES (%s, %s, %s, %s, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())',
-                [name, safe_name, email, pw_bcrypt]
+                '(name, safe_name, email, pw_bcrypt, country, creation_time, latest_activity) '
+                'VALUES (%s, %s, %s, %s, %s, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())',
+                [name, safe_name, email, pw_bcrypt, country]
             )
+            user_id = db_cursor.lastrowid
 
             # add to `stats` table.
-            await glob.db.execute(
+            await db_cursor.execute(
                 'INSERT INTO stats '
                 '(id) VALUES (%s)',
                 [user_id]

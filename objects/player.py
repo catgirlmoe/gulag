@@ -4,7 +4,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date
 from enum import IntEnum
 from enum import unique
 from functools import cached_property
@@ -14,12 +14,12 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
+import aiomysql
 from cmyui.logging import Ansi
 from cmyui.logging import log
 from cmyui.discord import Webhook
 
 import packets
-from constants.countries import country_codes
 from constants.gamemodes import GameMode
 from constants.mods import Mods
 from constants.privileges import ClientPrivileges
@@ -187,21 +187,23 @@ class Player:
         self.clan: Optional['Clan'] = extras.get('clan', None)
         self.clan_priv: Optional['ClanPrivileges'] = extras.get('clan_priv', None)
 
-        # store achievements per-gamemode
-        self.achievements: dict[int, set['Achievement']] = {
-            0: set(), 1: set(),
-            2: set(), 3: set()
-        }
+        self.achievements: set['Achievement'] = set()
 
-        self.country = (0, 'XX') # (code, letters)
-        self.location = (0.0, 0.0) # (lat, long)
+        self.geoloc = extras.get('geoloc', {
+            'latitude': 0.0,
+            'longitude': 0.0,
+            'country': {
+                'iso_code': 'XX',
+                'numeric': 0
+            }
+        })
 
         self.utc_offset = extras.get('utc_offset', 0)
         self.pm_private = extras.get('pm_private', False)
         self.away_msg: Optional[str] = None
         self.silence_end = extras.get('silence_end', 0)
         self.in_lobby = False
-        self.osu_ver: Optional[datetime] = extras.get('osu_ver', None)
+        self.osu_ver: Optional[date] = extras.get('osu_ver', None)
         self.pres_filter = PresenceFilter.Nil
 
         login_time = extras.get('login_time', 0.0)
@@ -437,9 +439,10 @@ class Player:
 
         log(log_msg, Ansi.LRED)
 
-        if webhook_url := glob.config.webhooks['audit-log']:
-            webhook = Webhook(webhook_url, content=log_msg)
-            await webhook.post(glob.http)
+        if glob.has_internet:
+            if webhook_url := glob.config.webhooks['audit-log']:
+                webhook = Webhook(webhook_url, content=log_msg)
+                await webhook.post(glob.http)
 
         if self.online:
             # log the user out if they're offline, this
@@ -465,9 +468,10 @@ class Player:
 
         log(log_msg, Ansi.LRED)
 
-        if webhook_url := glob.config.webhooks['audit-log']:
-            webhook = Webhook(webhook_url, content=log_msg)
-            await webhook.post(glob.http)
+        if glob.has_internet:
+            if webhook_url := glob.config.webhooks['audit-log']:
+                webhook = Webhook(webhook_url, content=log_msg)
+                await webhook.post(glob.http)
 
         if self.online:
             # log the user out if they're offline, this
@@ -566,7 +570,7 @@ class Player:
         if (lobby := glob.channels['#lobby']) in self.channels:
             self.leave_channel(lobby)
 
-        slot = m.slots[0 if slotID == -1 else slotID]
+        slot: Slot = m.slots[0 if slotID == -1 else slotID]
 
         # if in a teams-vs mode, switch team from neutral to red.
         if m.team_type in (MatchTeamTypes.team_vs,
@@ -589,7 +593,16 @@ class Player:
                 log(f"{self} tried leaving a match they're not in?", Ansi.LYELLOW)
             return
 
-        self.match.get_slot(self).reset()
+        slot = self.match.get_slot(self)
+
+        if slot.status == SlotStatus.locked:
+            # player was kicked, keep the slot locked.
+            new_status = SlotStatus.locked
+        else:
+            # player left, open the slot for new players to join.
+            new_status = SlotStatus.open
+
+        slot.reset(new_status=new_status)
 
         self.leave_channel(self.match.chat)
 
@@ -652,16 +665,11 @@ class Player:
 
     def join_channel(self, c: Channel) -> bool:
         """Attempt to add `self` to `c`."""
-        # ensure they're not already in chan.
-        if self in c:
-            return False
-
-        # ensure they have read privs.
-        if self.priv & c.read_priv != c.read_priv:
-            return False
-
-        # lobby can only be interacted with while in mp lobby.
-        if c._name == '#lobby' and not self.in_lobby:
+        if (
+            self in c or # player already in channel
+            not c.can_read(self.priv) or # no read privs
+            c._name == '#lobby' and not self.in_lobby # not in mp lobby
+        ):
             return False
 
         c.append(self) # add to c.players
@@ -669,11 +677,21 @@ class Player:
 
         self.enqueue(packets.channelJoin(c.name))
 
-        # update channel usercounts for all clients that can see.
-        # for instanced channels, enqueue update to only players
-        # in the instance; for normal channels, enqueue to all.
-        for p in (c.players if c.instance else glob.players):
-            p.enqueue(packets.channelInfo(*c.basic_info))
+        chan_info_packet = packets.channelInfo(
+            c.name, c.topic, len(c.players)
+        )
+
+        if c.instance:
+            # instanced channel, only send the players
+            # who are currently inside of the instance
+            for p in c.players:
+                p.enqueue(chan_info_packet)
+        else:
+            # normal channel, send to all players who
+            # have access to see the channel's usercount.
+            for p in glob.players:
+                if c.can_read(p.priv):
+                    p.enqueue(chan_info_packet)
 
         if glob.app.debug:
             log(f'{self} joined {c}.')
@@ -692,13 +710,21 @@ class Player:
         if kick:
             self.enqueue(packets.channelKick(c.name))
 
-        # update channel usercounts for all clients that can see.
-        # for instanced channels, enqueue update to only players
-        # in the instance; for normal channels, enqueue to all.
-        recipients = c.players if c.instance else glob.players
+        chan_info_packet = packets.channelInfo(
+            c.name, c.topic, len(c.players)
+        )
 
-        for p in recipients:
-            p.enqueue(packets.channelInfo(*c.basic_info))
+        if c.instance:
+            # instanced channel, only send the players
+            # who are currently inside of the instance
+            for p in c.players:
+                p.enqueue(chan_info_packet)
+        else:
+            # normal channel, send to all players who
+            # have access to see the channel's usercount.
+            for p in glob.players:
+                if c.can_read(p.priv):
+                    p.enqueue(chan_info_packet)
 
         if glob.app.debug:
             log(f'{self} left {c}.')
@@ -733,8 +759,8 @@ class Player:
 
             self.enqueue(packets.spectatorJoined(p.id))
         else:
-            # player is admin in stealth, only give other
-            # players data to us, not vice-versa.
+            # player is admin in stealth, only give
+            # other players data to us, not vice-versa.
             for s in self.spectators:
                 p.enqueue(packets.fellowSpectatorJoined(s.id))
 
@@ -755,8 +781,9 @@ class Player:
             # remove host from channel, deleting it.
             self.leave_channel(c)
         else:
+            # send new playercount
+            c_info = packets.channelInfo(c.name, c.topic, len(c.players))
             fellow = packets.fellowSpectatorLeft(p.id)
-            c_info = packets.channelInfo(*c.basic_info) # new playercount
 
             self.enqueue(c_info)
 
@@ -826,40 +853,6 @@ class Player:
 
         log(f'{self} unblocked {p}.')
 
-    def fetch_geoloc_db(self, ip: str) -> None:
-        """Fetch geolocation data based on ip (using local db)."""
-        res = glob.geoloc_db.city(ip)
-
-        iso_code = res.country.iso_code
-        loc = res.location
-
-        self.country = (country_codes[iso_code], iso_code)
-        self.location = (loc.latitude, loc.longitude)
-
-    async def fetch_geoloc_web(self, ip: str) -> None:
-        """Fetch geolocation data based on ip (using ip-api)."""
-        url = f'http://ip-api.com/line/{ip}'
-
-        async with glob.http.get(url) as resp:
-            if not resp or resp.status != 200:
-                log('Failed to get geoloc data: request failed.', Ansi.LRED)
-                return
-
-            status, *lines = (await resp.text()).split('\n')
-
-            if status != 'success':
-                err_msg = lines[0]
-                if err_msg == 'invalid query':
-                    err_msg += f' ({url})'
-
-                log(f'Failed to get geoloc data: {err_msg}.', Ansi.LRED)
-                return
-
-        iso_code = lines[1]
-
-        self.country = (country_codes[iso_code], iso_code)
-        self.location = (float(lines[6]), float(lines[7])) # lat, long
-
     async def unlock_achievement(self, a: 'Achievement') -> None:
         """Unlock `ach` for `self`, storing in both cache & sql."""
         await glob.db.execute(
@@ -869,18 +862,18 @@ class Player:
             [self.id, a.id]
         )
 
-        self.achievements[a.mode].add(a)
+        self.achievements.add(a)
 
-    async def relationships_from_sql(self) -> None:
+    async def relationships_from_sql(self, db_cursor: aiomysql.DictCursor) -> None:
         """Retrieve `self`'s relationships from sql."""
-        res = await glob.db.fetchall(
+        await db_cursor.execute(
             'SELECT user2, type '
             'FROM relationships '
             'WHERE user1 = %s',
             [self.id]
         )
 
-        for row in res:
+        async for row in db_cursor:
             if row['type'] == 'friend':
                 self.friends.add(row['user2'])
             else:
@@ -889,57 +882,59 @@ class Player:
         # always have bot added to friends.
         self.friends.add(1)
 
-    async def achievements_from_sql(self) -> None:
+    async def achievements_from_sql(self, db_cursor: aiomysql.DictCursor) -> None:
         """Retrieve `self`'s achievements from sql."""
-        for mode in range(4):
-            # get all users achievements for this mode
-            res = await glob.db.fetchall(
-                'SELECT ua.achid id FROM user_achievements ua '
-                'INNER JOIN achievements a ON a.id = ua.achid '
-                'WHERE ua.userid = %s AND a.mode = %s',
-                [self.id, mode]
-            )
+        await db_cursor.execute(
+            'SELECT ua.achid id FROM user_achievements ua '
+            'INNER JOIN achievements a ON a.id = ua.achid '
+            'WHERE ua.userid = %s',
+            [self.id]
+        )
 
-            if not res:
-                # user has no achievements for this mode
-                continue
+        async for row in db_cursor:
+            for ach in glob.achievements:
+                if row['id'] == ach.id:
+                    self.achievements.add(ach)
 
-            # get cached achievements for this mode
-            achs = glob.achievements[mode]
-
-            for row in res:
-                for ach in achs:
-                    if row['id'] == ach.id:
-                        self.achievements[mode].add(ach)
-
-    async def stats_from_sql_full(self) -> None:
+    async def stats_from_sql_full(self, db_cursor: aiomysql.DictCursor) -> None:
         """Retrieve `self`'s stats (all modes) from sql."""
-        for mode in GameMode:
-            # grab static stats from SQL.
-            res = await glob.db.fetch(
-                'SELECT tscore_{0:sql} tscore, rscore_{0:sql} rscore, '
-                'pp_{0:sql} pp, plays_{0:sql} plays, acc_{0:sql} acc, '
-                'playtime_{0:sql} playtime, max_combo_{0:sql} max_combo '
-                'FROM stats WHERE id = %s'.format(mode),
-                [self.id]
-            )
+        await db_cursor.execute(
+            'SELECT * '
+            'FROM stats '
+            'WHERE id = %s',
+            [self.id]
+        )
 
-            if not res:
-                log(f"Failed to fetch {self}'s {mode!r} stats.", Ansi.LRED)
-                return
+        res = await db_cursor.fetchone()
+
+        # get global rank for each mode
+        # XXX: this will be improved in future
+        for mode in GameMode:
+            mode_suffix = format(mode, 'sql')
 
             # calculate rank.
-            res['rank'] = (await glob.db.fetch(
+            await db_cursor.execute(
                 'SELECT COUNT(*) AS higher_pp_players '
                 'FROM stats s '
                 'INNER JOIN users u USING(id) '
-                f'WHERE s.pp_{mode:sql} > %s '
+                f'WHERE s.pp_{mode_suffix} > %s '
                 'AND u.priv & 1 and u.id != %s',
-                [res['pp'], self.id]
-            ))['higher_pp_players'] + 1
+                [res[f'pp_{mode_suffix}'], self.id]
+            )
+
+            mode_rank = (await db_cursor.fetchone())['higher_pp_players'] + 1
 
             # update stats
-            self.stats[mode] = ModeData(**res)
+            self.stats[mode] = ModeData(
+                tscore=res[f'tscore_{mode_suffix}'],
+                rscore=res[f'rscore_{mode_suffix}'],
+                pp=res[f'pp_{mode_suffix}'],
+                acc=res[f'acc_{mode_suffix}'],
+                plays=res[f'plays_{mode_suffix}'],
+                playtime=res[f'playtime_{mode_suffix}'],
+                max_combo=res[f'max_combo_{mode_suffix}'],
+                rank=mode_rank
+            )
 
     async def add_to_menu(
         self, coroutine: Coroutine,
@@ -962,14 +957,15 @@ class Player:
         # return the key.
         return randnum
 
-    async def update_latest_activity(self) -> None:
+    def update_latest_activity(self) -> None:
         """Update the player's latest activity in the database."""
-        await glob.db.execute(
+        task = glob.db.execute(
             'UPDATE users '
             'SET latest_activity = UNIX_TIMESTAMP() '
             'WHERE id = %s',
             [self.id]
         )
+        glob.loop.create_task(task)
 
     def enqueue(self, b: bytes) -> None:
         """Add data to be sent to the client."""
