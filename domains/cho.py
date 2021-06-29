@@ -319,7 +319,7 @@ class SendMessage(BasePacket):
 
         p.update_latest_activity()
         if recipient == '#osu':
-            sendSendMessage(p, msg)
+            await sendSendMessage(p, msg)
         log(f'{p} @ {t_chan}: {msg}', Ansi.LCYAN, fd='.data/logs/chat.log')
 
 @register(ClientPackets.LOGOUT, restricted=True)
@@ -337,7 +337,7 @@ class Logout(BasePacket):
         p.logout()
 
         p.update_latest_activity()
-        sendLogout(p)
+        await sendLogout(p)
 
 @register(ClientPackets.REQUEST_STATUS_UPDATE, restricted=True)
 class StatsUpdateRequest(BasePacket):
@@ -773,7 +773,7 @@ async def login(body_view: memoryview, ip: str, db_cursor: aiomysql.DictCursor) 
     log(f'{p} logged in with {osu_ver_str} on {user_os}.', Ansi.LCYAN)
 
     p.update_latest_activity()
-    sendLogin(p)
+    await sendLogin(p)
     return bytes(data), p.token
 
 @register(ClientPackets.START_SPECTATING)
@@ -1141,7 +1141,7 @@ class MatchPart(BasePacket):
     async def handle(self, p: Player) -> None:
         p.update_latest_activity()
         if not p.match is None:
-            sendMatchPart(p, p.match)
+            await sendMatchPart(p, p.match)
         p.leave_match()
 
 @register(ClientPackets.MATCH_CHANGE_SLOT)
