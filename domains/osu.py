@@ -2460,7 +2460,7 @@ async def register_account(
                 else:
                     # localhost, unknown country
                     country = 'XX'
-
+            country = 'XX'#Temp fix cuz crash
             # add to `users` table.
             await db_cursor.execute(
                 'INSERT INTO users '
