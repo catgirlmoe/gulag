@@ -15,7 +15,7 @@ RUN mkdir /gulag
 WORKDIR /gulag
 
 # Create gulag user, chown the workdir and switch to it
-RUN addgroup --system --gid 1000 gulag && adduser --system --uid 1000 --gid 1000 gulag
+RUN addgroup --system --gid 1003 gulag && adduser --system --uid 1003 --gid 1003 gulag
 RUN chown -R gulag:gulag /gulag
 USER gulag
 
