@@ -1038,10 +1038,10 @@ def userPresence(p: 'Player') -> bytes:
         (p.id, osuTypes.i32),
         (p.name, osuTypes.string),
         (p.utc_offset + 24, osuTypes.u8),
-        (p.geoloc['country']['numeric'], osuTypes.u8),
+        (185, osuTypes.u8),
         (p.bancho_priv | (p.status.mode.as_vanilla << 5), osuTypes.u8),
-        (p.geoloc['longitude'], osuTypes.f32),
-        (p.geoloc['latitude'], osuTypes.f32),
+        (0.0, osuTypes.f32),
+        (0.0, osuTypes.f32),
         (p.gm_stats.rank, osuTypes.i32)
     )
 
