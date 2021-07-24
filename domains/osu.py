@@ -615,9 +615,6 @@ async def osuSubmitModularSelector(
         if glob.datadog:
             glob.datadog.increment('gulag.submitted_scores_best')
 
-        if not score.player.restricted:
-            await sendSubmitScore(score)
-
         if score.bmap.has_leaderboard:
             if (
                 score.mode < GameMode.rx_std and
@@ -631,6 +628,9 @@ async def osuSubmitModularSelector(
             score.player.enqueue(packets.notification(
                 f'You achieved #{score.rank}! ({performance})'
             ))
+
+            if not score.player.restricted:
+                await sendSubmitScore(score)
 
             if (
                 score.rank == 1 and
@@ -2356,8 +2356,6 @@ async def register_account(
             glob.cache['bcrypt'][pw_bcrypt] = pw_md5 # cache result for login
 
             safe_name = name.lower().replace(' ', '_')
-            
-            #country = 'XX'#Perm fix cuz crash
 
             if 'CF-IPCountry' in conn.headers:
                 # best case, dev has enabled ip geolocation in the

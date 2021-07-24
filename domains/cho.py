@@ -368,7 +368,7 @@ class StatsUpdateRequest(BasePacket):
 WELCOME_MSG = '\n'.join((
     f"Welcome to {BASE_DOMAIN}.",
     "To see a list of commands, use !help.",
-    "We have a public (Discord)[https://join.catgirl.moe]!",
+    "We have a public (Discord)[https://discord.gg/6udzwjH]!",
     "Enjoy the server!"
 ))
 
@@ -379,7 +379,7 @@ RESTRICTED_MSG = (
 )
 
 WELCOME_NOTIFICATION = packets.notification(
-    f'Welcome back to {BASE_DOMAIN}!\n'
+    f'Welcome to the chinese botnet!\n'
     f'Running gulag v{glob.version}.'
 )
 
@@ -667,9 +667,7 @@ async def login(
         p.bancho_priv | ClientPrivileges.Supporter
     )
 
-    data += packets.notification('Welcome to the chinese botnet!\n'
-                                'Running a custom fork of gulag\n')
-    #data += WELCOME_NOTIFICATION
+    data += WELCOME_NOTIFICATION
 
     if not glob.has_internet:
         data += OFFLINE_NOTIFICATION
@@ -1131,7 +1129,7 @@ class MatchCreate(BasePacket):
 
         p.update_latest_activity()
         p.join_match(self.match, self.match.passwd)
-        await sendMatchCreate(p, self.match)
+
         self.match.chat.send_bot(f'Match created by {p.name}.')
         log(f'{p} created a new multiplayer match.')
 
@@ -1457,6 +1455,7 @@ class MatchComplete(BasePacket):
         m.in_progress = False
         m.enqueue(packets.matchComplete(), lobby=False, immune=not_playing)
         m.enqueue_state()
+
         if m.is_scrimming:
             # determine winner, update match points & inform players.
             asyncio.create_task(m.update_matchpoints(was_playing))

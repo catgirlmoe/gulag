@@ -532,7 +532,7 @@ async def _map(ctx: Context) -> str:
         ctx.args[0] not in ('rank', 'unrank', 'love') or
         ctx.args[1] not in ('set', 'map')
     ):
-        return f'Invalid syntax: !map <rank/unrank/love> <map/set> {ctx.args!s} {len(ctx.args)!s}'
+        return 'Invalid syntax: !map <rank/unrank/love> <map/set>'
 
     if time.time() >= ctx.player.last_np['timeout']:
         return 'Please /np a map first!'
