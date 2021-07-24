@@ -217,7 +217,8 @@ create table scores_ap
 	time_elapsed int not null,
 	client_flags int not null,
 	userid int not null,
-	perfect tinyint(1) not null
+	perfect tinyint(1) not null,
+	online_checksum char(32) not null
 );
 
 create table scores_rx
@@ -243,7 +244,8 @@ create table scores_rx
 	time_elapsed int not null,
 	client_flags int not null,
 	userid int not null,
-	perfect tinyint(1) not null
+	perfect tinyint(1) not null,
+	online_checksum char(32) not null
 );
 
 create table scores_vn
@@ -269,7 +271,8 @@ create table scores_vn
 	time_elapsed int not null,
 	client_flags int not null,
 	userid int not null,
-	perfect tinyint(1) not null
+	perfect tinyint(1) not null,
+	online_checksum char(32) not null
 );
 
 create table startups
@@ -284,64 +287,21 @@ create table startups
 
 create table stats
 (
-	id int auto_increment
-		primary key,
-	tscore_vn_std bigint(21) unsigned default 0 not null,
-	tscore_vn_taiko bigint(21) unsigned default 0 not null,
-	tscore_vn_catch bigint(21) unsigned default 0 not null,
-	tscore_vn_mania bigint(21) unsigned default 0 not null,
-	tscore_rx_std bigint(21) unsigned default 0 not null,
-	tscore_rx_taiko bigint(21) unsigned default 0 not null,
-	tscore_rx_catch bigint(21) unsigned default 0 not null,
-	tscore_ap_std bigint(21) unsigned default 0 not null,
-	rscore_vn_std bigint(21) unsigned default 0 not null,
-	rscore_vn_taiko bigint(21) unsigned default 0 not null,
-	rscore_vn_catch bigint(21) unsigned default 0 not null,
-	rscore_vn_mania bigint(21) unsigned default 0 not null,
-	rscore_rx_std bigint(21) unsigned default 0 not null,
-	rscore_rx_taiko bigint(21) unsigned default 0 not null,
-	rscore_rx_catch bigint(21) unsigned default 0 not null,
-	rscore_ap_std bigint(21) unsigned default 0 not null,
-	pp_vn_std int(11) unsigned default 0 not null,
-	pp_vn_taiko int(11) unsigned default 0 not null,
-	pp_vn_catch int(11) unsigned default 0 not null,
-	pp_vn_mania int(11) unsigned default 0 not null,
-	pp_rx_std int(11) unsigned default 0 not null,
-	pp_rx_taiko int(11) unsigned default 0 not null,
-	pp_rx_catch int(11) unsigned default 0 not null,
-	pp_ap_std int(11) unsigned default 0 not null,
-	plays_vn_std int(11) unsigned default 0 not null,
-	plays_vn_taiko int(11) unsigned default 0 not null,
-	plays_vn_catch int(11) unsigned default 0 not null,
-	plays_vn_mania int(11) unsigned default 0 not null,
-	plays_rx_std int(11) unsigned default 0 not null,
-	plays_rx_taiko int(11) unsigned default 0 not null,
-	plays_rx_catch int(11) unsigned default 0 not null,
-	plays_ap_std int(11) unsigned default 0 not null,
-	playtime_vn_std int(11) unsigned default 0 not null,
-	playtime_vn_taiko int(11) unsigned default 0 not null,
-	playtime_vn_catch int(11) unsigned default 0 not null,
-	playtime_vn_mania int(11) unsigned default 0 not null,
-	playtime_rx_std int(11) unsigned default 0 not null,
-	playtime_rx_taiko int(11) unsigned default 0 not null,
-	playtime_rx_catch int(11) unsigned default 0 not null,
-	playtime_ap_std int(11) unsigned default 0 not null,
-	acc_vn_std float(6,3) default 0.000 not null,
-	acc_vn_taiko float(6,3) default 0.000 not null,
-	acc_vn_catch float(6,3) default 0.000 not null,
-	acc_vn_mania float(6,3) default 0.000 not null,
-	acc_rx_std float(6,3) default 0.000 not null,
-	acc_rx_taiko float(6,3) default 0.000 not null,
-	acc_rx_catch float(6,3) default 0.000 not null,
-	acc_ap_std float(6,3) default 0.000 not null,
-	max_combo_vn_std int(11) unsigned default 0 not null,
-	max_combo_vn_taiko int(11) unsigned default 0 not null,
-	max_combo_vn_catch int(11) unsigned default 0 not null,
-	max_combo_vn_mania int(11) unsigned default 0 not null,
-	max_combo_rx_std int(11) unsigned default 0 not null,
-	max_combo_rx_taiko int(11) unsigned default 0 not null,
-	max_combo_rx_catch int(11) unsigned default 0 not null,
-	max_combo_ap_std int(11) unsigned default 0 not null
+	id int auto_increment,
+	mode tinyint(1) not null,
+	tscore bigint(21) unsigned default 0 not null,
+	rscore bigint(21) unsigned default 0 not null,
+	pp int(11) unsigned default 0 not null,
+	plays int(11) unsigned default 0 not null,
+	playtime int(11) unsigned default 0 not null,
+	acc float(6,3) default 0.000 not null,
+	max_combo int(11) unsigned default 0 not null,
+	xh_count int(11) unsigned default 0 not null,
+	x_count int(11) unsigned default 0 not null,
+	sh_count int(11) unsigned default 0 not null,
+	s_count int(11) unsigned default 0 not null,
+	a_count int(11) unsigned default 0 not null,
+	primary key (id, mode)
 );
 
 create table tourney_pool_maps
@@ -406,7 +366,14 @@ insert into users (id, name, safe_name, priv, country, silence_end, email, pw_bc
 values (1, 'BanchoBot', 'banchobot', 1, 'ca', 0, 'bot@gulag.ca',
         '_______________________my_cool_bcrypt_______________________', UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
 
-insert into stats (id) values (1);
+INSERT INTO stats (id, mode) VALUES (1, 0);
+INSERT INTO stats (id, mode) VALUES (1, 1);
+INSERT INTO stats (id, mode) VALUES (1, 2);
+INSERT INTO stats (id, mode) VALUES (1, 3);
+INSERT INTO stats (id, mode) VALUES (1, 4);
+INSERT INTO stats (id, mode) VALUES (1, 5);
+INSERT INTO stats (id, mode) VALUES (1, 6);
+INSERT INTO stats (id, mode) VALUES (1, 7);
 
 # offset score ids to avoid replay file collisions.
 alter table scores_rx auto_increment = 3074457345618258602;

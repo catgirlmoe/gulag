@@ -8,8 +8,6 @@ from datetime import date
 from enum import IntEnum
 from enum import unique
 from functools import cached_property
-from functools import partial
-from typing import Coroutine
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
@@ -31,11 +29,16 @@ from objects.match import MatchTeams
 from objects.match import MatchTeamTypes
 from objects.match import Slot
 from objects.match import SlotStatus
+from objects.menu import Menu
+from objects.menu import MenuCommands
+from objects.menu import MenuFunction
+from objects.menu import menu_keygen
+from objects.score import Grade
+from objects.score import Score
 from utils.misc import escape_enum
 from utils.misc import pymysql_encode
 
 if TYPE_CHECKING:
-    from objects.score import Score
     from objects.achievement import Achievement
     from objects.clan import Clan
     from objects.clan import ClanPrivileges
@@ -87,6 +90,8 @@ class ModeData:
     max_combo: int
     rank: int # global
 
+    grades: dict[Grade, int] # XH, X, SH, S, A
+
 @dataclass
 class Status:
     """The current status of a player."""
@@ -96,6 +101,24 @@ class Status:
     mods: Mods = Mods.NOMOD
     mode: GameMode = GameMode.vn_std
     map_id: int = 0
+
+# temporary menu-related stuff
+async def bot_hello(p: 'Player') -> None:
+    p.send_bot(f'hello {p.name}!')
+
+async def notif_hello(p: 'Player') -> None:
+    p.enqueue(packets.notification(f'hello {p.name}!'))
+
+MENU2 = Menu('Second Menu', {
+    menu_keygen(): (MenuCommands.Back, None),
+    menu_keygen(): (MenuCommands.Execute, MenuFunction('notif_hello', notif_hello)),
+})
+
+MAIN_MENU = Menu('Main Menu', {
+    menu_keygen(): (MenuCommands.Execute, MenuFunction('bot_hello', bot_hello)),
+    menu_keygen(): (MenuCommands.Execute, MenuFunction('notif_hello', notif_hello)),
+    menu_keygen(): (MenuCommands.Advance, MENU2)
+})
 
 class Player:
     """\
@@ -120,10 +143,6 @@ class Player:
     pres_filter: `PresenceFilter`
         The scope of users the client can currently see.
 
-    menu_options: `dict[int, dict[str, object]]`
-        The current osu! chat menu options available to the player.
-        XXX: These may eventually have a timeout.
-
     bot_client: `bool`
         Whether this is a bot account.
 
@@ -145,7 +164,8 @@ class Player:
         'utc_offset', 'pm_private',
         'away_msg', 'silence_end', 'in_lobby', 'osu_ver',
         'pres_filter', 'login_time', 'last_recv_time',
-        'menu_options',
+
+        'current_menu', 'previous_menus',
 
         'bot_client', 'tourney_client',
         'api_key', '_queue',
@@ -193,7 +213,7 @@ class Player:
             'latitude': 0.0,
             'longitude': 0.0,
             'country': {
-                'iso_code': 'XX',
+                'acronym': 'xx',
                 'numeric': 0
             }
         })
@@ -213,7 +233,9 @@ class Player:
         # XXX: below is mostly gulag-specific & internal stuff
 
         # store most recent score for each gamemode.
-        self.recent_scores: dict[GameMode, Score] = {}
+        self.recent_scores: dict[GameMode, Optional[Score]] = {
+            mode: None for mode in GameMode
+        }
 
         # store the last beatmap /np'ed by the user.
         self.last_np = {
@@ -222,8 +244,9 @@ class Player:
             'timeout': 0
         }
 
-        # {id: {'callback', func, 'timeout': unixt, 'reusable': False}, ...}
-        self.menu_options: dict[int, dict[str, object]] = {}
+        # TODO: document
+        self.current_menu = MAIN_MENU
+        self.previous_menus = []
 
         # subject to possible change in the future,
         # although if anything, bot accounts will
@@ -320,7 +343,7 @@ class Player:
         return self.stats[self.status.mode]
 
     @cached_property
-    def recent_score(self) -> 'Score':
+    def recent_score(self) -> Score:
         """The player's most recently submitted score."""
         score = None
         for s in self.recent_scores.values():
@@ -750,7 +773,6 @@ class Player:
             log(f'{self} failed to join {spec_chan}?', Ansi.LYELLOW)
             return
 
-        #p.enqueue(packets.channelJoin(c.name))
         if not p.stealth:
             p_joined = packets.fellowSpectatorJoined(p.id)
             for s in self.spectators:
@@ -899,63 +921,66 @@ class Player:
     async def stats_from_sql_full(self, db_cursor: aiomysql.DictCursor) -> None:
         """Retrieve `self`'s stats (all modes) from sql."""
         await db_cursor.execute(
-            'SELECT * '
+            'SELECT tscore, rscore, pp, acc, '
+            'plays, playtime, max_combo, '
+            'xh_count, x_count, sh_count, s_count, a_count '
             'FROM stats '
             'WHERE id = %s',
             [self.id]
         )
 
-        res = await db_cursor.fetchone()
-
-        # get global rank for each mode
-        # XXX: this will be improved in future
-        for mode in GameMode:
-            mode_suffix = format(mode, 'sql')
-
-            # calculate rank.
+        for mode, row in enumerate(await db_cursor.fetchall()):
+            # calculate player's rank.
+            # TODO: do rankings with bisection algorithms
+            # locally, pulling from the database @ startup.
             await db_cursor.execute(
                 'SELECT COUNT(*) AS higher_pp_players '
                 'FROM stats s '
                 'INNER JOIN users u USING(id) '
-                f'WHERE s.pp_{mode_suffix} > %s '
-                'AND u.priv & 1 and u.id != %s',
-                [res[f'pp_{mode_suffix}'], self.id]
+                'WHERE s.mode = %s '
+                'AND s.pp > %s '
+                'AND u.priv & 1 '
+                'AND u.id != %s',
+                [mode, row['pp'], self.id]
             )
 
-            mode_rank = (await db_cursor.fetchone())['higher_pp_players'] + 1
+            row['rank'] = (await db_cursor.fetchone())['higher_pp_players'] + 1
 
-            # update stats
-            self.stats[mode] = ModeData(
-                tscore=res[f'tscore_{mode_suffix}'],
-                rscore=res[f'rscore_{mode_suffix}'],
-                pp=res[f'pp_{mode_suffix}'],
-                acc=res[f'acc_{mode_suffix}'],
-                plays=res[f'plays_{mode_suffix}'],
-                playtime=res[f'playtime_{mode_suffix}'],
-                max_combo=res[f'max_combo_{mode_suffix}'],
-                rank=mode_rank
-            )
+            row['grades'] = {
+                Grade.XH: row.pop('xh_count'),
+                Grade.X: row.pop('x_count'),
+                Grade.SH: row.pop('sh_count'),
+                Grade.S: row.pop('s_count'),
+                Grade.A: row.pop('a_count')
+            }
 
-    async def add_to_menu(
-        self, coroutine: Coroutine,
-        timeout: int = -1,
-        reusable: bool = False
-    ) -> int:
-        """Add a valid callback to the user's osu! chat options."""
-        # generate random negative number in int32 space as the key.
-        rand = partial(random.randint, 64, 0x7fffffff)
-        while (randnum := rand()) in self.menu_options:
-            ...
+            self.stats[GameMode(mode)] = ModeData(**row)
 
-        # append the callback to their menu options w/ args.
-        self.menu_options[randnum] = {
-            'callback': coroutine,
-            'reusable': reusable,
-            'timeout': timeout if timeout != -1 else 0x7fffffff
-        }
+    def send_menu_clear(self) -> None:
+        """Clear the user's osu! chat with the bot
+           to make room for a new menu to be sent."""
+        # NOTE: the only issue with this is that it will
+        # wipe any messages the client can see from the bot
+        # (including any other channels). perhaps menus can
+        # be sent from a separate presence to prevent this?
+        self.enqueue(packets.userSilenced(glob.bot.id))
 
-        # return the key.
-        return randnum
+    def send_current_menu(self) -> None:
+        """Forward a standardized form of the user's
+           current menu to them via the osu! chat."""
+        msg = [self.current_menu.name]
+
+        for key, (cmd, data) in self.current_menu.options.items():
+            val = data.name if data else 'Back'
+            msg.append(f'[osump://{key}/ {val}]')
+
+        chat_height = 10
+        lines_used = len(msg)
+        if lines_used < chat_height:
+            msg += [chr(8192)] * (chat_height - lines_used)
+
+        self.send_menu_clear()
+        self.send_bot('\n'.join(msg))
 
     def update_latest_activity(self) -> None:
         """Update the player's latest activity in the database."""

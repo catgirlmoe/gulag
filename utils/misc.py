@@ -2,7 +2,7 @@
 
 import inspect
 import io
-from re import I
+import ipaddress
 import requests
 import secrets
 import socket
@@ -48,7 +48,7 @@ __all__ = (
 useful_keys = (Keys.M1, Keys.M2,
                Keys.K1, Keys.K2)
 
-def get_press_times(frames: Sequence[ReplayFrame]) -> dict[Keys, float]:
+def get_press_times(frames: Sequence[ReplayFrame]) -> dict[int, float]:
     """A very basic function to press times of an osu! replay.
        This is mostly only useful for taiko maps, since it
        doesn't take holds into account (taiko has none).
@@ -278,22 +278,24 @@ async def log_strange_occurrence(obj: object) -> None:
 
         log("Greatly appreciated if you could forward this to cmyui#0425 :)", Ansi.LYELLOW)
 
-def fetch_geoloc_db(ip: str) -> dict[str, Union[str, float]]:
+IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
+
+def fetch_geoloc_db(ip: IPAddress) -> dict[str, Union[str, float]]:
     """Fetch geolocation data based on ip (using local db)."""
     res = glob.geoloc_db.city(ip)
 
-    iso_code = res.country.iso_code
+    acronym = res.country.iso_code.lower()
 
     return {
         'latitude': res.location.latitude,
         'longitude': res.location.longitude,
         'country': {
-            'iso_code': iso_code,
-            'numeric': country_codes[iso_code]
+            'acronym': acronym,
+            'numeric': country_codes[acronym]
         }
     }
 
-async def fetch_geoloc_web(ip: str) -> dict[str, Union[str, float]]:
+async def fetch_geoloc_web(ip: IPAddress) -> dict[str, Union[str, float]]:
     """Fetch geolocation data based on ip (using ip-api)."""
     if not glob.has_internet: # requires internet connection
         return
@@ -315,14 +317,14 @@ async def fetch_geoloc_web(ip: str) -> dict[str, Union[str, float]]:
             log(f'Failed to get geoloc data: {err_msg}.', Ansi.LRED)
             return
 
-    iso_code = lines[1]
+    acronym = lines[1].lower()
 
     return {
         'latitude': float(lines[6]),
         'longitude': float(lines[7]),
         'country': {
-            'iso_code': iso_code,
-            'numeric': country_codes[iso_code]
+            'acronym': acronym,
+            'numeric': country_codes[acronym]
         }
     }
 
