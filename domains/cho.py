@@ -337,9 +337,9 @@ class SendMessage(BasePacket):
             t_chan.send(msg, sender=p)
 
         p.update_latest_activity()
+        log(f'{p} @ {t_chan}: {msg}', Ansi.LCYAN, file='.data/logs/chat.log')
         if recipient == '#osu':
             await sendSendMessage(p, msg)
-        log(f'{p} @ {t_chan}: {msg}', Ansi.LCYAN, file='.data/logs/chat.log')
 
 @register(ClientPackets.LOGOUT, restricted=True)
 class Logout(BasePacket):

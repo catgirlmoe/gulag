@@ -629,8 +629,8 @@ async def osuSubmitModularSelector(
                 f'You achieved #{score.rank}! ({performance})'
             ))
 
-            if not score.player.restricted:
-                await sendSubmitScore(score)
+            #if not score.player.restricted:
+            #    await sendSubmitScore(score)
 
             if (
                 score.rank == 1 and

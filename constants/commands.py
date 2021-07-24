@@ -590,7 +590,7 @@ async def _map(ctx: Context) -> str:
                     'WHERE map_id = %s',
                     [map_id]
                 )
-            await sendRankMap(ctx.player, bmap, str(new_status).lower())
+            # await sendRankMap(ctx.player, bmap, str(new_status).lower())
 
     return f'{bmap.embed} updated to {new_status!s}.'
 
