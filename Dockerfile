@@ -25,7 +25,7 @@ CMD [ "python3.9", "./main.py" ]
 
 # Copy and build oppai-ng
 COPY --chown=gulag:gulag ./oppai-ng ./oppai-ng
-RUN cd oppai-ng && chmod +x ./build && ./build && cd ..
+RUN cd oppai-ng && chmod +x ./libbuild && ./libbuild && cd ..
 
 # Copy over the rest of gulag
 COPY --chown=gulag:gulag ./ ./
