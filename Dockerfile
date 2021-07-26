@@ -1,7 +1,7 @@
-FROM python:3.9-buster
+FROM archlinux
 
 # Update and install essentials
-RUN apt update && apt install -y build-essential
+RUN pacman -Syu base base-devel nano curl python --needed
 
 # Install dependencies
 COPY ./ext/requirements.txt requirements.txt
@@ -15,7 +15,7 @@ RUN mkdir /gulag
 WORKDIR /gulag
 
 # Create gulag user, chown the workdir and switch to it
-RUN addgroup --system --gid 1003 gulag && adduser --system --uid 1003 --gid 1003 gulag
+RUN groupadd --system --gid 1003 gulag && useradd --system --uid 1003 --gid 1003 gulag
 RUN chown -R gulag:gulag /gulag
 USER gulag
 
