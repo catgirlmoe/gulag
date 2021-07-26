@@ -1,7 +1,7 @@
 FROM archlinux
 
 # Update and install essentials
-RUN pacman -Syu base base-devel nano curl python --needed
+RUN pacman -Syu base base-devel nano curl python --needed --noconfirm
 
 # Install dependencies
 COPY ./ext/requirements.txt requirements.txt
