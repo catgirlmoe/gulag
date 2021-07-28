@@ -5,6 +5,7 @@ from cmyui.discord import Embed
 
 from objects import glob
 from objects.score import Score
+from objects.score import Grade
 from objects.player import Player
 from objects.beatmap import Beatmap
 from objects.match import Match
@@ -14,29 +15,29 @@ CHAT_HOOK = glob.config.webhooks['chat-bridge']
 SCORE_HOOK = glob.config.webhooks['score-log']
 
 GRADE_EMOTES = {
-  "XH": "<:grade_xh:833673474836660265>",
-  "SH": "<:grade_sh:833673474277900318>",
-  "X":  "<:grade_x:833673474270167060>",
-  "S":  "<:grade_s:833673474022572032>",
-  "A":  "<:grade_a:833673433941934091>",
-  "B":  "<:grade_b:833673434122289172>",
-  "C":  "<:grade_c:833673433656721418>",
-  "D":  "<:grade_d:833673433408733194>",
-  "F":  "",
-  "N":  ""
+  Grade.XH: "<:grade_xh:833673474836660265>",
+  Grade.SH: "<:grade_sh:833673474277900318>",
+  Grade.X:  "<:grade_x:833673474270167060>",
+  Grade.S:  "<:grade_s:833673474022572032>",
+  Grade.A:  "<:grade_a:833673433941934091>",
+  Grade.B:  "<:grade_b:833673434122289172>",
+  Grade.C:  "<:grade_c:833673433656721418>",
+  Grade.D:  "<:grade_d:833673433408733194>",
+  Grade.F:  "",
+  Grade.N:  ""
 }
 
 GRADE_COLORS = {
-  "XH": 0xE0F7FA, #Silver SS
-  "SH": 0xE0F7FA, #Silver S
-  "X":  0xFFEB3B, #SS
-  "S":  0xFFEB3B, #S
-  "A":  0x8BC34A,
-  "B":  0x2196F3,
-  "C":  0x9C27B0,
-  "D":  0xF44336,
-  "F":  0x212121,
-  "N":  0x212121
+  Grade.XH: 0xE0F7FA, #Silver SS
+  Grade.SH: 0xE0F7FA, #Silver S
+  Grade.X:  0xFFEB3B, #SS
+  Grade.S:  0xFFEB3B, #S
+  Grade.A:  0x8BC34A,
+  Grade.B:  0x2196F3,
+  Grade.C:  0x9C27B0,
+  Grade.D:  0xF44336,
+  Grade.F:  0x212121,
+  Grade.N:  0x212121
 }
 
 MOD_EMOTES = {
