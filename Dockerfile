@@ -1,11 +1,15 @@
 FROM ubuntu:bionic
 
+# Update and install required packages
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential software-properties-common wget
+
 # Add python3.9 repository
 RUN add-apt-repository ppa:deadsnakes/ppa
 
-# Update and install packages
-RUN apt-get update 
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential python3.9 python3.9-dev python3.9-distutils wget
+# Install python
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3.9 python3.9-dev python3.9-distutils
+
+# Cleanup apt garbage to reduce image size
 RUN apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install pip
