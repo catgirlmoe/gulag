@@ -2309,8 +2309,8 @@ async def register_account(
     if '_' in name and ' ' in name:
         errors['username'].append('May contain "_" and " ", but not both.')
 
-    if name in glob.config.disallowed_names:
-        errors['username'].append('Disallowed username; pick another.')
+    if name not in glob.config.disallowed_names:
+        errors['username'].append('You are not whitelisted. Ask Atakku#2391 to whitelist you')
 
     if 'username' not in errors:
         await db_cursor.execute('SELECT 1 FROM users WHERE name = %s', [name])
