@@ -1205,14 +1205,14 @@ class MatchJoin(BasePacket):
 
         p.update_latest_activity()
         p.join_match(m, self.match_passwd)
-        await sendMatchJoin(p, m)
+        #await sendMatchJoin(p, m)
 
 @register(ClientPackets.PART_MATCH)
 class MatchPart(BasePacket):
     async def handle(self, p: Player) -> None:
         p.update_latest_activity()
-        if not p.match is None:
-            await sendMatchPart(p, p.match)
+        #if not p.match is None:
+        #    await sendMatchPart(p, p.match)
         p.leave_match()
 
 @register(ClientPackets.MATCH_CHANGE_SLOT)
@@ -1459,7 +1459,8 @@ class MatchComplete(BasePacket):
         if m.is_scrimming:
             # determine winner, update match points & inform players.
             asyncio.create_task(m.update_matchpoints(was_playing))
-        asyncio.create_task(sendMatchComplete(was_playing, m))
+        #TODO: Redo this thingy
+        #asyncio.create_task(sendMatchComplete(was_playing, m))
 
 @register(ClientPackets.MATCH_CHANGE_MODS)
 class MatchChangeMods(BasePacket):

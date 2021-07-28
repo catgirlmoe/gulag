@@ -10,6 +10,7 @@ from objects.player import Player
 from objects.beatmap import Beatmap
 from objects.match import Match
 from objects.match import Slot
+from constants.gamemodes import GameMode
 
 CHAT_HOOK = glob.config.webhooks['chat-bridge']
 SCORE_HOOK = glob.config.webhooks['score-log']
@@ -76,10 +77,16 @@ MOD_EMOTES = {
 }
 
 MODE_EMOTES = {
-  'std': "<:std:835465330204606495>",
-  'taiko': "<:taiko:835465330318508053>",
-  'catch': "<:catch:835465328645242931>",
-  'mania': "<:mania:835465327948333057>",
+  GameMode.vn_std: "<:std:835465330204606495>",
+  GameMode.vn_taiko: "<:taiko:835465330318508053>",
+  GameMode.vn_catch: "<:catch:835465328645242931>",
+  GameMode.vn_mania: "<:mania:835465327948333057>",
+
+  GameMode.rx_std: "<:std:835465330204606495> (<:rx:833699841267597343>)",
+  GameMode.rx_taiko: "<:taiko:835465330318508053> (<:rx:833699841267597343>)",
+  GameMode.rx_catch: "<:catch:835465328645242931> (<:rx:833699841267597343>)",
+
+  GameMode.ap_std: "<:std:835465330204606495> (<:ap:833699842177368125>)",
 }
 
 def sanitize(m: str):
@@ -93,7 +100,7 @@ async def sendSubmitScore(s: Score):
     diff.insert(1, f'({"".join(map(lambda mod: MOD_EMOTES[mod], re.findall("..",repr(s.mods).replace("DTNC","NC"))))})')
 
   e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{s.bmap.id}',color=GRADE_COLORS[s.grade])
-  e.set_author(name=f'{s.player.name} achieved #{s.rank} on', url=f'https://osu.catgirl.moe/u/{s.player.id}', icon_url=f'https://a.osu.catgirl.moe/{s.player.id}')
+  e.set_author(name=f'{s.player.name} achieved #{s.rank} in {MODE_EMOTES[s.mode]}', url=f'https://osu.catgirl.moe/u/{s.player.id}', icon_url=f'https://a.osu.catgirl.moe/{s.player.id}')
   e.add_field("Difficulty:", ' '.join(diff), True)
   e.add_field("Accuracy:", f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)', True)
   e.add_field("Score:", f'{s.score:,} ({s.max_combo:,}/{s.bmap.max_combo:,}x)', True)
