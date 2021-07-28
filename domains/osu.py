@@ -45,6 +45,8 @@ from objects.score import SubmissionStatus
 from utils.misc import escape_enum
 from utils.misc import pymysql_encode
 
+from utils.catgirlmoe import sendSubmitScore
+
 if TYPE_CHECKING:
     from objects.player import Player
 
@@ -626,6 +628,9 @@ async def osuSubmitModularSelector(
             score.player.enqueue(packets.notification(
                 f'You achieved #{score.rank}! ({performance})'
             ))
+
+            if not score.player.restricted:
+                await sendSubmitScore(score)
 
             if (
                 score.rank == 1 and

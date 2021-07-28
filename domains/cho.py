@@ -51,6 +51,14 @@ from packets import BanchoPacketReader
 from packets import BasePacket
 from packets import ClientPackets
 
+from utils.catgirlmoe import sendLogin
+from utils.catgirlmoe import sendLogout
+from utils.catgirlmoe import sendSendMessage
+from utils.catgirlmoe import sendMatchCreate
+from utils.catgirlmoe import sendMatchJoin
+from utils.catgirlmoe import sendMatchPart
+from utils.catgirlmoe import sendMatchComplete
+
 IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
 """ Bancho: handle connections from the osu! client """
@@ -329,6 +337,8 @@ class SendMessage(BasePacket):
             t_chan.send(msg, sender=p)
 
         p.update_latest_activity()
+        if recipient == '#osu':
+            await sendSendMessage(p, msg)
         log(f'{p} @ {t_chan}: {msg}', Ansi.LCYAN, file='.data/logs/chat.log')
 
 @register(ClientPackets.LOGOUT, restricted=True)
@@ -346,6 +356,7 @@ class Logout(BasePacket):
         p.logout()
 
         p.update_latest_activity()
+        await sendLogout(p)
 
 @register(ClientPackets.REQUEST_STATUS_UPDATE, restricted=True)
 class StatsUpdateRequest(BasePacket):
@@ -357,7 +368,7 @@ class StatsUpdateRequest(BasePacket):
 WELCOME_MSG = '\n'.join((
     f"Welcome to {BASE_DOMAIN}.",
     "To see a list of commands, use !help.",
-    "We have a public (Discord)[https://discord.gg/ShEQgUx]!",
+    "We have a public (Discord)[https://discord.gg/6udzwjH]!",
     "Enjoy the server!"
 ))
 
@@ -368,7 +379,7 @@ RESTRICTED_MSG = (
 )
 
 WELCOME_NOTIFICATION = packets.notification(
-    f'Welcome back to {BASE_DOMAIN}!\n'
+    f'Welcome to the chinese botnet!\n'
     f'Running gulag v{glob.version}.'
 )
 
@@ -794,6 +805,7 @@ async def login(
     log(f'{p} logged in with {osu_ver_str} on {user_os}.', Ansi.LCYAN)
 
     p.update_latest_activity()
+    await sendLogin(p)
     return bytes(data), p.token
 
 @register(ClientPackets.START_SPECTATING)
@@ -1193,11 +1205,14 @@ class MatchJoin(BasePacket):
 
         p.update_latest_activity()
         p.join_match(m, self.match_passwd)
+        await sendMatchJoin(p, m)
 
 @register(ClientPackets.PART_MATCH)
 class MatchPart(BasePacket):
     async def handle(self, p: Player) -> None:
         p.update_latest_activity()
+        if not p.match is None:
+            await sendMatchPart(p, p.match)
         p.leave_match()
 
 @register(ClientPackets.MATCH_CHANGE_SLOT)
@@ -1444,6 +1459,7 @@ class MatchComplete(BasePacket):
         if m.is_scrimming:
             # determine winner, update match points & inform players.
             asyncio.create_task(m.update_matchpoints(was_playing))
+        asyncio.create_task(sendMatchComplete(was_playing, m))
 
 @register(ClientPackets.MATCH_CHANGE_MODS)
 class MatchChangeMods(BasePacket):
