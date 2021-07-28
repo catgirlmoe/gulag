@@ -77,16 +77,16 @@ MOD_EMOTES = {
 }
 
 MODE_EMOTES = {
-  GameMode.vn_std: "vn_std",
-  GameMode.vn_taiko: "vn_taiko",
-  GameMode.vn_catch: "vn_catch",
-  GameMode.vn_mania: "vn_mania",
+  GameMode.vn_std: "std",
+  GameMode.vn_taiko: "taiko",
+  GameMode.vn_catch: "catch",
+  GameMode.vn_mania: "mania",
 
-  GameMode.rx_std: "rx_std",
-  GameMode.rx_taiko: "rx_taiko",
-  GameMode.rx_catch: "rx_catch",
+  GameMode.rx_std: "std (Rx)",
+  GameMode.rx_taiko: "taiko (Rx)",
+  GameMode.rx_catch: "catch (Rx)",
 
-  GameMode.ap_std: "ap_std",
+  GameMode.ap_std: "std (Ap)",
 }
 
 def sanitize(m: str):
