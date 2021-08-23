@@ -226,9 +226,10 @@ async def reconnect(ctx: Context) -> str:
     """Disconnect and reconnect to the server."""
     ctx.player.logout()
 
+"""
 @command(Privileges.Normal)
 async def changename(ctx: Context) -> str:
-    """Change your username."""
+    Change your username.
     name = ' '.join(ctx.args).strip()
 
     if not regexes.username.match(name):
@@ -257,6 +258,7 @@ async def changename(ctx: Context) -> str:
         packets.notification(f'Your username has been changed to {name}!')
     )
     ctx.player.logout()
+"""
 
 @command(Privileges.Normal, aliases=['bloodcat', 'beatconnect', 'chimu', 'q'])
 async def maplink(ctx: Context) -> str:
