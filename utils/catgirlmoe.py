@@ -100,7 +100,7 @@ async def sendSubmitScore(s: Score):
     diff.insert(1, f'({"".join(map(lambda mod: MOD_EMOTES[mod], re.findall("..",repr(s.mods).replace("DTNC","NC"))))})')
 
   e = Embed(title=s.bmap.full, url=f'https://osu.ppy.sh/b/{s.bmap.id}',color=GRADE_COLORS[s.grade])
-  e.set_author(name=f'{s.player.name} achieved #{s.rank} in {MODE_EMOTES[s.mode]}', url=f'https://osu.catgirl.moe/u/{s.player.id}', icon_url=f'https://a.osu.catgirl.moe/{s.player.id}')
+  e.set_author(name=f'{s.player.name} achieved #{s.rank} in {MODE_EMOTES[s.mode]}', url=f'https://osu.neko.rs/u/{s.player.id}', icon_url=f'https://a.osu.neko.rs/{s.player.id}')
   e.add_field("Difficulty:", ' '.join(diff), True)
   e.add_field("Accuracy:", f'{s.acc:.2f}% {GRADE_EMOTES[s.grade]} ({s.pp:,.2f}pp)', True)
   e.add_field("Score:", f'{s.score:,} ({s.max_combo:,}/{s.bmap.max_combo:,}x)', True)
@@ -121,14 +121,14 @@ async def sendRankMap(p: Player, b: Beatmap, s: str):
   wh = Webhook(url=CHAT_HOOK)
 
   e = Embed(title=b.full, url=f'https://osu.ppy.sh/b/{b.id}', color=0xE91E63)
-  e.set_author(name=f'{p.name} {s} a map', url=f'https://osu.catgirl.moe/u/{p.id}', icon_url=f'https://a.osu.catgirl.moe/{p.id}')
+  e.set_author(name=f'{p.name} {s} a map', url=f'https://osu.neko.rs/u/{p.id}', icon_url=f'https://a.osu.neko.rs/{p.id}')
   e.set_image(url=f'https://assets.ppy.sh/beatmaps/{b.set_id}/covers/cover.jpg')
   
   wh.add_embed(e)
   await wh.post(glob.http)
 
 async def sendSendMessage(p: Player, m: str):
-  wh = Webhook(url=CHAT_HOOK, username=p.name, avatar_url=f'https://a.osu.catgirl.moe/{p.id}', content=sanitize(m))
+  wh = Webhook(url=CHAT_HOOK, username=p.name, avatar_url=f'https://a.osu.neko.rs/{p.id}', content=sanitize(m))
   await wh.post(glob.http)
 
 async def sendMatchCreate(p: Player, m: Match):
